@@ -1,0 +1,5 @@
+allowBuilds:
+  vue-demi: true
+minimumReleaseAgeExclude:
+  - alova@3.5.4
+  - pinia@4.0.3
