@@ -2,22 +2,15 @@
 import type { SidebarProps } from '@/components/ui/sidebar'
 
 import {
-  AudioWaveform,
-  Command,
-  Frame,
-  GalleryVerticalEnd,
-  LayoutDashboard,
-  Map,
-  PieChart,
   Radio,
+  Sliders,
+  Zap,
 } from '@lucide/vue'
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
 
+import NavLabInfo from '@/components/layout/nav/NavLabInfo.vue'
 import NavMain from '@/components/layout/nav/NavMain.vue'
-import NavProjects from '@/components/layout/nav/NavProjects.vue'
-import NavUser from '@/components/layout/nav/NavUser.vue'
-import TeamSwitcher from '@/components/layout/nav/TeamSwitcher.vue'
 import {
   Sidebar,
   SidebarContent,
@@ -33,111 +26,54 @@ const props = withDefaults(defineProps<SidebarProps>(), {
 const route = useRoute()
 
 // ---------------------------------------------------------------------------
-// 布局配置：以后新增页面只需在 navMain / projects 中追加一项即可。
+// 侧边栏导航：仅保留 CAN 通讯诊断与电驱桥控制台
 // ---------------------------------------------------------------------------
-const data = {
-  user: {
-    name: 'FastAPI Vue',
-    email: 'admin@example.com',
-    avatar: '',
+const navItems = [
+  {
+    title: 'CAN 通讯诊断',
+    url: '/can',
+    icon: Radio,
   },
-  teams: [
-    {
-      name: 'Acme Inc',
-      logo: GalleryVerticalEnd,
-      plan: 'Enterprise',
-    },
-    {
-      name: 'Acme Corp.',
-      logo: AudioWaveform,
-      plan: 'Startup',
-    },
-    {
-      name: 'Evil Corp.',
-      logo: Command,
-      plan: 'Free',
-    },
-  ],
-  navMain: [
-    {
-      title: '仪表盘',
-      url: '/',
-      icon: LayoutDashboard,
-    },
-    {
-      title: '实时演示',
-      url: '/realtime',
-      icon: Radio,
-      items: [
-        {
-          title: 'SSE 实时消息',
-          url: '/realtime',
-        },
-      ],
-    },
-    {
-      title: '示例页面',
-      url: '/pages/one',
-      icon: Command,
-      items: [
-        {
-          title: '示例页面一',
-          url: '/pages/one',
-        },
-        {
-          title: '示例页面二',
-          url: '/pages/two',
-        },
-      ],
-    },
-  ],
-  projects: [
-    {
-      name: '示例项目 Alpha',
-      url: '/pages/one',
-      icon: PieChart,
-    },
-    {
-      name: '示例项目 Beta',
-      url: '/pages/two',
-      icon: Frame,
-    },
-    {
-      name: '接口文档',
-      url: 'http://127.0.0.1:8000/docs',
-      icon: Map,
-    },
-  ],
-}
+  {
+    title: '电驱桥控制台',
+    url: '/axle',
+    icon: Sliders,
+  },
+]
 
-/** 菜单激活状态跟随当前路由自动更新。 */
+/** 菜单激活状态跟随当前路由自动更新 */
 const navMain = computed(() =>
-  data.navMain.map((item) => {
-    const subItems = item.items?.map((subItem) => ({
-      ...subItem,
-      isActive: route.path === subItem.url,
-    }))
-    return {
-      ...item,
-      isActive: route.path === item.url || (subItems?.some((subItem) => subItem.isActive) ?? false),
-      items: subItems,
-    }
-  }),
+  navItems.map((item) => ({
+    ...item,
+    isActive: route.path === item.url || (item.url !== '/' && route.path.startsWith(item.url)),
+  })),
 )
 </script>
 
 <template>
   <Sidebar v-bind="props">
-    <SidebarHeader>
-      <TeamSwitcher :teams="data.teams" />
+    <!-- 系统品牌标识 -->
+    <SidebarHeader class="p-3 border-b border-sidebar-border">
+      <div class="flex items-center gap-3">
+        <div class="flex aspect-square size-8 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground shrink-0 shadow-xs">
+          <Zap class="size-4" />
+        </div>
+        <div class="flex flex-1 items-center text-left group-data-[collapsible=icon]:hidden">
+          <span class="truncate font-bold text-sm text-sidebar-foreground">电驱桥测控系统</span>
+        </div>
+      </div>
     </SidebarHeader>
+
+    <!-- 主导航菜单 -->
     <SidebarContent>
       <NavMain :items="navMain" />
-      <NavProjects :projects="data.projects" />
     </SidebarContent>
-    <SidebarFooter>
-      <NavUser :user="data.user" />
+
+    <!-- 底部：电驱系统研究所 & 软件信息弹窗 -->
+    <SidebarFooter class="p-2 border-t border-sidebar-border/50">
+      <NavLabInfo />
     </SidebarFooter>
+
     <SidebarRail />
   </Sidebar>
 </template>

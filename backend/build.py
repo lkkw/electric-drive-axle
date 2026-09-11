@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import subprocess
 import sys
@@ -51,7 +52,7 @@ def build_frontend(*, skip_build: bool) -> None:
 
 def pyinstaller_data_option(source: Path, destination: str) -> str:
     """Return PyInstaller's cross-platform SOURCE:DEST data-file syntax."""
-    return f"{source.resolve().as_posix()}:{destination}"
+    return f"{source.resolve().as_posix()}{os.pathsep}{destination}"
 
 
 def package_desktop(args: argparse.Namespace) -> Path:
@@ -70,6 +71,8 @@ def package_desktop(args: argparse.Namespace) -> Path:
         str(BACKEND_DIR),
         "--add-data",
         pyinstaller_data_option(STATIC_DIR, "static"),
+        "--add-data",
+        pyinstaller_data_option(BACKEND_DIR / "zlgcan_x64", "zlgcan_x64"),
         "--distpath",
         str(RELEASE_DIR),
         "--workpath",

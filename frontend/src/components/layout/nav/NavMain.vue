@@ -38,7 +38,7 @@ defineProps<{
 
 <template>
   <SidebarGroup>
-    <SidebarGroupLabel>Platform</SidebarGroupLabel>
+    <SidebarGroupLabel>台架导航</SidebarGroupLabel>
     <SidebarMenu>
       <template v-for="item in items" :key="item.title">
         <!-- 有子菜单的项：Collapsible 折叠展开 -->
@@ -74,7 +74,11 @@ defineProps<{
 
         <!-- 无子菜单的项：直接作为路由链接跳转 -->
         <SidebarMenuItem v-else>
-          <SidebarMenuButton as-child :is-active="item.isActive" :tooltip="item.title">
+          <SidebarMenuButton
+            as-child
+            :is-active="item.isActive"
+            :tooltip="item.title"
+          >
             <RouterLink :to="item.url">
               <component :is="item.icon" v-if="item.icon" />
               <span>{{ item.title }}</span>

@@ -11,37 +11,32 @@ const router = createRouter({
       children: [
         {
           path: '',
-          name: 'dashboard',
-          component: () => import('@/views/DashboardView.vue'),
-          meta: { title: '仪表盘' },
+          redirect: '/can',
         },
         {
-          path: 'realtime',
-          name: 'realtime',
-          component: () => import('@/views/SseDemo.vue'),
-          meta: { title: 'SSE 实时消息' },
+          path: 'can',
+          name: 'can-comm',
+          component: () => import('@/views/CanCommView.vue'),
+          meta: { title: 'CAN 通讯诊断' },
         },
         {
-          path: 'pages/one',
-          name: 'page-one',
-          component: () => import('@/views/PageOneView.vue'),
-          meta: { title: '示例页面一' },
+          path: 'axle',
+          name: 'axle-control',
+          component: () => import('@/views/AxleControlView.vue'),
+          meta: { title: '电驱桥控制台' },
         },
-        {
-          path: 'pages/two',
-          name: 'page-two',
-          component: () => import('@/views/PageTwoView.vue'),
-          meta: { title: '示例页面二' },
-        },
-        // 以后新增页面：在这里追加一条路由，并在 AppSidebar.vue 中加菜单项。
       ],
+    },
+    {
+      path: '/:pathMatch(.*)*',
+      redirect: '/can',
     },
   ],
 })
 
 router.afterEach((to) => {
   const title = to.meta.title as string | undefined
-  document.title = title ? `${title} · FastAPI + Vue 3 Starter` : 'FastAPI + Vue 3 Starter'
+  document.title = title ? `${title} · 电驱桥上位机系统` : '电驱桥上位机系统'
 })
 
 export default router

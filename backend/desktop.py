@@ -82,8 +82,8 @@ def verify_local_server(base_url: str) -> None:
     checks = (
         ("/", "text/html"),
         ("/health", "application/json"),
-        ("/api/v1/demo", "application/json"),
-        ("/api/v1/sse/events?interval_seconds=0.1&max_events=1", "text/event-stream"),
+        ("/api/v1/axle/status", "application/json"),
+        ("/api/v1/axle/stream", "text/event-stream"),
     )
 
     for path, expected_content_type in checks:

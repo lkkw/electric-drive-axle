@@ -14,19 +14,18 @@ import { SidebarTrigger } from '@/components/ui/sidebar'
 
 const route = useRoute()
 
-// 路由 -> 面包屑文案。以后新增页面时在这里补一行即可。
+// 路由 -> 面包屑文案
 const pageTitles: Record<string, { group: string; page: string }> = {
-  '/': { group: '概览', page: '仪表盘' },
-  '/realtime': { group: '实时演示', page: 'SSE 实时消息' },
-  '/pages/one': { group: '示例页面', page: '示例页面一' },
-  '/pages/two': { group: '示例页面', page: '示例页面二' },
+  '/': { group: '测控系统', page: 'CAN 通讯诊断' },
+  '/can': { group: '测控系统', page: 'CAN 通讯诊断' },
+  '/axle': { group: '测试台架', page: '电驱桥控制台' },
 }
 
 const currentPage = computed(
   () =>
     pageTitles[route.path] ?? {
-      group: '应用',
-      page: route.path === '/' ? '仪表盘' : '页面',
+      group: '测试台架',
+      page: '控制系统',
     },
 )
 </script>
@@ -35,7 +34,7 @@ const currentPage = computed(
   <header
     class="flex h-16 shrink-0 items-center gap-2 transition-[width,height] ease-linear group-has-data-[collapsible=icon]/sidebar-wrapper:h-12"
   >
-    <div class="flex items-center gap-2 px-4">
+    <div class="flex items-center gap-2 px-4 sm:px-6">
       <SidebarTrigger class="-ml-1" />
       <Separator
         orientation="vertical"

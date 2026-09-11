@@ -23,7 +23,7 @@ def test_desktop_app_serves_vue_and_keeps_api_routes(tmp_path: Path) -> None:
     fallback_response = client.get("/settings/profile", headers={"Accept": "text/html"})
     unknown_api_response = client.get("/api/v1/not-found")
     asset_response = client.get("/assets/app.js")
-    api_response = client.get("/api/v1/demo")
+    api_response = client.get("/api/v1/axle/status")
 
     assert root_response.status_code == 200
     assert '<div id="app">desktop</div>' in root_response.text

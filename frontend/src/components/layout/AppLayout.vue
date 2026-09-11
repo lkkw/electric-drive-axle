@@ -9,8 +9,8 @@ import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar'
     <AppSidebar />
     <SidebarInset>
       <SiteHeader />
-      <!-- 内容区：以后只需要把页面注册到路由，就会自动渲染在这里。 -->
-      <main class="flex flex-1 flex-col gap-4 p-4 pt-0 lg:px-6">
+      <!-- 内容区：自适应宽屏工控布局 -->
+      <main class="flex flex-1 flex-col gap-4 px-4 sm:px-6 pb-6 pt-0">
         <RouterView />
       </main>
     </SidebarInset>
