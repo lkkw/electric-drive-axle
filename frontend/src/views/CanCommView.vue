@@ -21,7 +21,14 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { useAxleStore } from '@/stores/useAxleStore'
@@ -199,10 +206,16 @@ onBeforeUnmount(() => {
                   <SelectTrigger class="w-full font-mono">
                     <SelectValue placeholder="选择设备型号" />
                   </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="4">USBCAN2</SelectItem>
-                    <SelectItem value="3">USBCAN1</SelectItem>
-                    <SelectItem value="21">USBCAN-2E-U</SelectItem>
+                  <SelectContent
+                    position="popper"
+                    side="bottom"
+                    align="start"
+                  >
+                    <SelectGroup>
+                      <SelectItem value="4">USBCAN2</SelectItem>
+                      <SelectItem value="3">USBCAN1</SelectItem>
+                      <SelectItem value="21">USBCAN-2E-U</SelectItem>
+                    </SelectGroup>
                   </SelectContent>
                 </Select>
               </div>
@@ -231,10 +244,16 @@ onBeforeUnmount(() => {
                   <SelectTrigger class="w-full font-mono">
                     <SelectValue placeholder="选择通道" />
                   </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="0">CAN 通道 0</SelectItem>
-                    <SelectItem value="1">CAN 通道 1</SelectItem>
-                    <SelectItem value="-1">双通道 (全部)</SelectItem>
+                  <SelectContent
+                    position="popper"
+                    side="bottom"
+                    align="start"
+                  >
+                    <SelectGroup>
+                      <SelectItem value="0">CAN 通道 0</SelectItem>
+                      <SelectItem value="1">CAN 通道 1</SelectItem>
+                      <SelectItem value="-1">双通道 (全部)</SelectItem>
+                    </SelectGroup>
                   </SelectContent>
                 </Select>
               </div>
@@ -250,11 +269,17 @@ onBeforeUnmount(() => {
                   <SelectTrigger class="w-full font-mono">
                     <SelectValue placeholder="选择波特率" />
                   </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="250000">250 kbps</SelectItem>
-                    <SelectItem value="500000">500 kbps</SelectItem>
-                    <SelectItem value="1000000">1000 kbps (1M)</SelectItem>
-                    <SelectItem value="125000">125 kbps</SelectItem>
+                  <SelectContent
+                    position="popper"
+                    side="bottom"
+                    align="start"
+                  >
+                    <SelectGroup>
+                      <SelectItem value="250000">250 kbps</SelectItem>
+                      <SelectItem value="500000">500 kbps</SelectItem>
+                      <SelectItem value="1000000">1000 kbps (1M)</SelectItem>
+                      <SelectItem value="125000">125 kbps</SelectItem>
+                    </SelectGroup>
                   </SelectContent>
                 </Select>
               </div>
@@ -436,16 +461,19 @@ onBeforeUnmount(() => {
       <CardContent class="p-0 flex-1 overflow-hidden">
         <!-- 监视表格 -->
         <div class="h-full overflow-y-auto font-mono text-xs divide-y divide-border/60">
-          <Table class="w-full text-left">
+          <Table class="w-full table-fixed text-left">
             <TableHeader class="sticky top-0 bg-muted/80 backdrop-blur-xs text-muted-foreground text-[11px] uppercase border-b border-border/80">
               <TableRow>
-                <TableHead class="py-2.5 px-3 font-semibold w-20">{{ viewMode === 'TRACE' ? '序号' : '计数' }}</TableHead>
-                <TableHead class="py-2.5 px-3 font-semibold w-24">时间戳</TableHead>
-                <TableHead class="py-2.5 px-3 font-semibold w-20">方向</TableHead>
-                <TableHead class="py-2.5 px-3 font-semibold w-24">CAN ID</TableHead>
-                <TableHead class="py-2.5 px-3 font-semibold w-40">报文标识</TableHead>
-                <TableHead class="py-2.5 px-3 font-semibold w-16">DLC</TableHead>
-                <TableHead class="py-2.5 px-3 font-semibold">数据载荷 (DATA HEX)</TableHead>
+                <TableHead class="w-12 px-2 py-2.5 font-semibold sm:w-20 sm:px-3">{{ viewMode === 'TRACE' ? '序号' : '计数' }}</TableHead>
+                <TableHead class="hidden px-3 py-2.5 font-semibold sm:table-cell sm:w-24">时间戳</TableHead>
+                <TableHead class="w-16 px-2 py-2.5 font-semibold sm:w-20 sm:px-3">方向</TableHead>
+                <TableHead class="w-20 px-2 py-2.5 font-semibold sm:w-24 sm:px-3">CAN ID</TableHead>
+                <TableHead class="hidden px-3 py-2.5 font-semibold sm:table-cell sm:w-40">报文标识</TableHead>
+                <TableHead class="hidden px-3 py-2.5 font-semibold sm:table-cell sm:w-16">DLC</TableHead>
+                <TableHead class="px-2 py-2.5 font-semibold sm:px-3">
+                  <span class="sm:hidden">数据</span>
+                  <span class="hidden sm:inline">数据载荷 (DATA HEX)</span>
+                </TableHead>
               </TableRow>
             </TableHeader>
             <TableBody class="divide-y divide-border/40">
@@ -455,14 +483,14 @@ onBeforeUnmount(() => {
                 class="hover:bg-muted/30 transition-colors"
                 :class="cn(item.direction === 'TX' && 'bg-info/5')"
               >
-                <TableCell class="py-2 px-3 text-muted-foreground">
+                <TableCell class="px-2 py-2 text-muted-foreground sm:px-3">
                   <span v-if="viewMode === 'TRACE'">#{{ idx + 1 }}</span>
                   <Badge v-else variant="outline" class="font-mono text-[10px] px-1.5 py-0 bg-background text-muted-foreground">
                     {{ item.count }}
                   </Badge>
                 </TableCell>
-                <TableCell class="py-2 px-3 text-muted-foreground">{{ item.timestamp }}</TableCell>
-                <TableCell class="py-2 px-3">
+                <TableCell class="hidden px-3 py-2 text-muted-foreground sm:table-cell">{{ item.timestamp }}</TableCell>
+                <TableCell class="px-2 py-2 sm:px-3">
                   <Badge
                     :variant="item.direction === 'TX' ? 'info' : 'success'"
                     class="font-mono text-[10px] px-1.5 py-0"
@@ -470,20 +498,23 @@ onBeforeUnmount(() => {
                     {{ item.direction }}
                   </Badge>
                 </TableCell>
-                <TableCell class="py-2 px-3 font-bold text-foreground">
+                <TableCell class="px-2 py-2 font-bold text-foreground sm:px-3">
                   {{ item.can_id_hex }}
                 </TableCell>
-                <TableCell class="py-2 px-3 font-sans text-xs text-foreground truncate max-w-[160px]">
+                <TableCell class="hidden px-3 py-2 font-sans text-xs text-foreground truncate sm:table-cell">
                   {{ item.name || '—' }}
                 </TableCell>
-                <TableCell class="py-2 px-3 text-muted-foreground">{{ item.dlc }}</TableCell>
-                <TableCell class="py-2 px-3 font-mono font-semibold tracking-wider text-foreground">
+                <TableCell class="hidden px-3 py-2 text-muted-foreground sm:table-cell">{{ item.dlc }}</TableCell>
+                <TableCell class="truncate px-2 py-2 font-mono font-semibold tracking-wider text-foreground sm:px-3">
                   {{ item.data_hex }}
                 </TableCell>
               </TableRow>
 
               <TableRow v-if="processedFrames.length === 0">
-                <TableCell colspan="7" class="py-8 text-center text-muted-foreground font-sans">
+                <TableCell colspan="4" class="py-8 text-center text-muted-foreground font-sans sm:hidden">
+                  暂无报文流
+                </TableCell>
+                <TableCell colspan="7" class="hidden py-8 text-center text-muted-foreground font-sans sm:table-cell">
                   暂无报文流
                 </TableCell>
               </TableRow>

@@ -1,5 +1,6 @@
 import type {
   AxleActionResponse,
+  AxleSafetyConfig,
   AxleTelemetry,
   CanConnectRequest,
   CanSendRawFrameRequest,
@@ -31,6 +32,14 @@ export const updateCommand = (update: VcuCommandUpdateRequest) =>
 /** 紧急停机 */
 export const emergencyStop = () =>
   alova.Post<VcuCommandState>('/axle/emergency-stop', {})
+
+/** 获取上位机自动紧急停机阈值 */
+export const getSafetyConfig = () =>
+  alova.Get<AxleSafetyConfig>('/axle/safety/config', { cacheFor: 0 })
+
+/** 更新上位机自动紧急停机阈值 */
+export const updateSafetyConfig = (config: AxleSafetyConfig) =>
+  alova.Put<AxleSafetyConfig>('/axle/safety/config', config)
 
 /** 获取电驱桥当前遥测快照 (禁用缓存) */
 export const getAxleStatus = () =>

@@ -46,6 +46,33 @@ def test_update_axle_command() -> None:
     assert cmd_data["speed_req"] == 1500
 
 
+def test_update_safety_config() -> None:
+    """安全配置路由应保存配置，并拒绝超出 DBC 信号量程的阈值。"""
+    original = client.get("/api/v1/axle/safety/config").json()
+    payload = {
+        "enabled": True,
+        "max_motor_speed_rpm": 3200,
+        "max_motor_torque_nm": 450.0,
+        "max_motor_temp_c": 95.0,
+    }
+
+    try:
+        response = client.put("/api/v1/axle/safety/config", json=payload)
+        assert response.status_code == 200
+        assert response.json() == payload
+
+        status_data = client.get("/api/v1/axle/status").json()
+        assert status_data["safety"]["config"] == payload
+
+        invalid_response = client.put(
+            "/api/v1/axle/safety/config",
+            json={**payload, "max_motor_temp_c": 211.0},
+        )
+        assert invalid_response.status_code == 422
+    finally:
+        client.put("/api/v1/axle/safety/config", json=original)
+
+
 def test_emergency_stop() -> None:
     """测试紧急停机接口。"""
     response = client.post("/api/v1/axle/emergency-stop")

@@ -25,6 +25,12 @@ const router = createRouter({
           component: () => import('@/views/AxleControlView.vue'),
           meta: { title: '电驱桥控制台' },
         },
+        {
+          path: 'safety',
+          name: 'safety-config',
+          component: () => import('@/views/SafetyConfigView.vue'),
+          meta: { title: '安全配置' },
+        },
       ],
     },
     {

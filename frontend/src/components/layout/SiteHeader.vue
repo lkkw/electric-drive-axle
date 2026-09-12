@@ -19,6 +19,7 @@ const pageTitles: Record<string, { group: string; page: string }> = {
   '/': { group: '测控系统', page: 'CAN 通讯诊断' },
   '/can': { group: '测控系统', page: 'CAN 通讯诊断' },
   '/axle': { group: '测试台架', page: '电驱桥控制台' },
+  '/safety': { group: '安全保护', page: '安全配置' },
 }
 
 const currentPage = computed(

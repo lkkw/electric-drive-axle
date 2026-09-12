@@ -25,6 +25,9 @@ from app.core.can.constants import (
 )
 from app.core.can.driver import CanDriverError, ZlgCanDriver, windows_high_resolution_timer
 from app.schemas.axle import (
+    AxleSafetyConfig,
+    AxleSafetyStatus,
+    AxleSafetyTrip,
     AxleTelemetry,
     CanConnectRequest,
     CanFrameItem,
@@ -37,6 +40,10 @@ from app.schemas.axle import (
 )
 
 logger = logging.getLogger("app.axle_manager")
+
+# 自动停机只接受近期成功解码的反馈，避免使用断线前残留的遥测值。
+MCU_2_SAFETY_FRESHNESS_SECONDS = 0.5
+MCU_TBOX_SAFETY_FRESHNESS_SECONDS = 1.0
 
 
 class AxleManager:
@@ -69,7 +76,15 @@ class AxleManager:
         self._rx_frame_count: int = 0
         self._tx_error_count: int = 0
         self._last_rx_timestamp: float | None = None
+        self._mcu_1_last_rx_timestamp: float | None = None
+        self._mcu_2_last_rx_timestamp: float | None = None
+        self._mcu_tbox_last_rx_timestamp: float | None = None
         self._recent_frames: deque[CanFrameItem] = deque(maxlen=500)
+
+        # 上位机自动停机策略。阈值在内存中维护，默认关闭，避免未确认配置直接介入控制。
+        self._safety_config = AxleSafetyConfig()
+        self._safety_last_trip: AxleSafetyTrip | None = None
+        self._safety_trip_id = 0
 
         # 异步循环任务句柄
         self._tx_task: asyncio.Task[None] | None = None
@@ -102,6 +117,9 @@ class AxleManager:
             self._device_index = config.device_index
             self._channel = config.channel
             self._baud_rate = config.baud_rate
+            self._mcu_1_last_rx_timestamp = None
+            self._mcu_2_last_rx_timestamp = None
+            self._mcu_tbox_last_rx_timestamp = None
 
             logger.info(
                 "正在打开 USBCAN 设备 (type=%d, index=%d, chn=%d, baud=%d)...",
@@ -178,6 +196,9 @@ class AxleManager:
         """内部断开流程 (需在锁保护下调用)。"""
         self._is_transmitting = False
         self._connected = False
+        self._mcu_1_last_rx_timestamp = None
+        self._mcu_2_last_rx_timestamp = None
+        self._mcu_tbox_last_rx_timestamp = None
 
         # 1. 停止发送和接收后台任务
         tasks_to_cancel = [t for t in (self._tx_task, self._rx_task) if t is not None]
@@ -328,6 +349,107 @@ class AxleManager:
         """急停互锁状态。"""
         return self._is_emergency_locked
 
+    def get_safety_config(self) -> AxleSafetyConfig:
+        """获取当前上位机自动停机配置快照。"""
+        return self._safety_config.model_copy()
+
+    async def update_safety_config(
+        self,
+        config: AxleSafetyConfig,
+    ) -> AxleSafetyConfig:
+        """更新自动停机阈值。
+
+        保存配置本身不使用历史遥测立即触发急停；后续收到新鲜的 0x35B 或
+        0x35C 反馈时，才会按新配置执行安全判断。
+        """
+        async with self._lock:
+            self._safety_config = config.model_copy()
+            result = self._safety_config.model_copy()
+
+        self._broadcast_telemetry()
+        return result
+
+    def _find_safety_violation(self) -> tuple[str, float, float, str] | None:
+        """从新鲜 MCU 反馈中寻找第一项越限条件。
+
+        转速和转矩使用绝对值，因此正反转与驱动/回馈转矩都会受同一阈值保护。
+        电机温度只使用 0x35C 的 ``MCU_MotorTemp``，不以默认值或历史值判定。
+        """
+        config = self._safety_config
+        if not config.enabled or self._is_emergency_locked:
+            return None
+
+        now = time.time()
+        if (
+            self._mcu_2_last_rx_timestamp is not None
+            and now - self._mcu_2_last_rx_timestamp <= MCU_2_SAFETY_FRESHNESS_SECONDS
+        ):
+            actual_speed = float(abs(self._mcu_2.mcu_act_motor_spd))
+            if actual_speed > config.max_motor_speed_rpm:
+                return (
+                    "motor_speed",
+                    actual_speed,
+                    float(config.max_motor_speed_rpm),
+                    "RPM",
+                )
+
+            actual_torque = abs(self._mcu_2.mcu_act_motor_tq)
+            if actual_torque > config.max_motor_torque_nm:
+                return (
+                    "motor_torque",
+                    actual_torque,
+                    config.max_motor_torque_nm,
+                    "Nm",
+                )
+
+        if (
+            self._mcu_tbox_last_rx_timestamp is not None
+            and now - self._mcu_tbox_last_rx_timestamp
+            <= MCU_TBOX_SAFETY_FRESHNESS_SECONDS
+        ):
+            actual_temperature = float(self._mcu_tbox.mcu_motor_temp)
+            if actual_temperature > config.max_motor_temp_c:
+                return (
+                    "motor_temperature",
+                    actual_temperature,
+                    config.max_motor_temp_c,
+                    "℃",
+                )
+
+        return None
+
+    async def _evaluate_safety(self) -> bool:
+        """若任一已配置指标越限，记录事件并调用既有急停互锁。"""
+        violation = self._find_safety_violation()
+        if violation is None:
+            return False
+
+        metric, actual_value, threshold, unit = violation
+        metric_label = {
+            "motor_speed": "实际转速",
+            "motor_torque": "实际转矩",
+            "motor_temperature": "电机温度",
+        }[metric]
+        self._safety_trip_id += 1
+        self._safety_last_trip = AxleSafetyTrip(
+            trip_id=self._safety_trip_id,
+            metric=metric,
+            actual_value=actual_value,
+            threshold=threshold,
+            unit=unit,
+            message=(
+                f"{metric_label} {actual_value:g} {unit} 超过自动停机阈值 "
+                f"{threshold:g} {unit}。"
+            ),
+            triggered_at=datetime.now(UTC).isoformat(),
+        )
+        logger.warning("自动安全停机触发: %s", self._safety_last_trip.message)
+
+        # 复用统一急停路径，确保互锁、零转矩/零转速、空挡和立即发送逻辑一致。
+        await self.emergency_stop()
+        self._broadcast_telemetry()
+        return True
+
 
     def _record_frame(
         self,
@@ -423,8 +545,19 @@ class AxleManager:
             baud_rate=self._baud_rate,
             command=self._command.model_copy(),
             mcu_1=self._mcu_1.model_copy(),
+            mcu_1_last_rx_timestamp=self._mcu_1_last_rx_timestamp,
             mcu_2=self._mcu_2.model_copy(),
+            mcu_2_last_rx_timestamp=self._mcu_2_last_rx_timestamp,
             mcu_tbox=self._mcu_tbox.model_copy(),
+            mcu_tbox_last_rx_timestamp=self._mcu_tbox_last_rx_timestamp,
+            safety=AxleSafetyStatus(
+                config=self._safety_config.model_copy(),
+                last_trip=(
+                    self._safety_last_trip.model_copy()
+                    if self._safety_last_trip is not None
+                    else None
+                ),
+            ),
             tx_frame_count=self._tx_frame_count,
             rx_frame_count=self._rx_frame_count,
             tx_error_count=self._tx_error_count,
@@ -585,6 +718,7 @@ class AxleManager:
 
                         frame_name = f"CAN_0x{frame.can_id:X}"
                         # 使用 Python 3.10+ match-case 分发对应报文解码
+                        safety_feedback_updated = False
                         try:
                             match frame.can_id:
                                 case 0x35A:  # CAN_ID_MCU_DRIVE_MOTOR_1
@@ -599,6 +733,7 @@ class AxleManager:
                                         mcu_life_1=d1.mcu_life_1,
                                         mcu_tbox_flt_levl=d1.mcu_tbox_flt_levl,
                                     )
+                                    self._mcu_1_last_rx_timestamp = time.time()
 
                                 case 0x35B:  # CAN_ID_MCU_DRIVE_MOTOR_2
                                     frame_name = "MCU_2 (电机转速/转矩)"
@@ -615,6 +750,8 @@ class AxleManager:
                                         mcu_mcu_temp_extre_over=d2.mcu_mcu_temp_extre_over,
                                         mcu_life_2=d2.mcu_life_2,
                                     )
+                                    self._mcu_2_last_rx_timestamp = time.time()
+                                    safety_feedback_updated = True
 
                                 case 0x35C:  # CAN_ID_MCU_TBOX_DRIVE_MOTOR
                                     frame_name = "MCU_Tbox (温度热管理)"
@@ -627,6 +764,8 @@ class AxleManager:
                                         mcu_ctller_temp=dt.mcu_ctller_temp,
                                         mcu_tbox_life=dt.mcu_tbox_life,
                                     )
+                                    self._mcu_tbox_last_rx_timestamp = time.time()
+                                    safety_feedback_updated = True
 
                                 case _:
                                     # 其他未知或未配置的 CAN 报文
@@ -645,6 +784,9 @@ class AxleManager:
                             data=frame.data,
                             name=frame_name,
                         )
+
+                        if safety_feedback_updated:
+                            await self._evaluate_safety()
 
                 # 控制 SSE 广播频率 (约 20Hz / 50ms 一次推送，保证流畅且不阻塞网络)
                 now = time.perf_counter()

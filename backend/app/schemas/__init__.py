@@ -2,6 +2,9 @@
 
 from app.schemas.axle import (
     AxleActionResponse,
+    AxleSafetyConfig,
+    AxleSafetyStatus,
+    AxleSafetyTrip,
     AxleTelemetry,
     CanConnectRequest,
     CanFrameItem,
@@ -15,6 +18,9 @@ from app.schemas.axle import (
 
 __all__ = [
     "AxleActionResponse",
+    "AxleSafetyConfig",
+    "AxleSafetyStatus",
+    "AxleSafetyTrip",
     "AxleTelemetry",
     "CanConnectRequest",
     "CanFrameItem",

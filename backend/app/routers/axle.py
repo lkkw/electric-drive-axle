@@ -11,6 +11,7 @@ from app.core.can.driver import CanDriverError
 from app.dependencies import AxleManagerDep
 from app.schemas.axle import (
     AxleActionResponse,
+    AxleSafetyConfig,
     AxleTelemetry,
     CanConnectRequest,
     CanSendRawFrameRequest,
@@ -147,6 +148,31 @@ async def update_command(
 ) -> VcuCommandState:
     """更新上位机发送给 MCU 的目标控制参数，参数在下一次 10ms 周期立即生效。"""
     return await manager.update_command(update)
+
+
+@router.get(
+    "/safety/config",
+    response_model=AxleSafetyConfig,
+    summary="获取上位机自动紧急停机阈值",
+)
+async def get_safety_config(
+    manager: AxleManagerDep,
+) -> AxleSafetyConfig:
+    """获取当前自动停机开关及速度、转矩、电机温度阈值。"""
+    return manager.get_safety_config()
+
+
+@router.put(
+    "/safety/config",
+    response_model=AxleSafetyConfig,
+    summary="更新上位机自动紧急停机阈值",
+)
+async def update_safety_config(
+    config: AxleSafetyConfig,
+    manager: AxleManagerDep,
+) -> AxleSafetyConfig:
+    """保存自动停机配置；仅后续新鲜 MCU 反馈会参与越限判定。"""
+    return await manager.update_safety_config(config)
 
 
 @router.post(

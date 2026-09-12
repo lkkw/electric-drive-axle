@@ -14,10 +14,19 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { useAxleStore } from '@/stores/useAxleStore'
 import { GEAR_MAP, WORK_MODE_MAP } from '@/types/axle'
 
 const axleStore = useAxleStore()
+const SELECTABLE_GEAR_IDS = [1, 2, 3, 4] as const
 
 // 本地控制指令表单
 const form = reactive({
@@ -71,8 +80,6 @@ watch(
   { immediate: true },
 )
 
-
-
 /** 下发控制指令至后端 */
 async function handleApplyCommand() {
   isUserEditing.value = false
@@ -100,13 +107,23 @@ async function handleToggleEnable() {
 }
 
 /** 挡位切换 */
-async function handleSetGear(gear: number) {
+async function handleSetGear(value: unknown) {
+  const gear = Number(value)
+  if (!SELECTABLE_GEAR_IDS.some((gearId) => gearId === gear)) {
+    return
+  }
+
   form.gear_sts = gear
   await handleApplyCommand()
 }
 
-/** 工作模式切换 */
-async function handleSetMode(mode: number) {
+/** 工作模式切换：界面仅允许转矩模式和转速模式 */
+async function handleSetMode(value: unknown) {
+  const mode = Number(value)
+  if (mode !== 1 && mode !== 3) {
+    return
+  }
+
   form.work_mode_req = mode
   await handleApplyCommand()
 }
@@ -126,79 +143,45 @@ async function handleEmergencyStop() {
 <template>
   <Card class="border-border shadow-xs h-full flex flex-col">
     <CardHeader class="pb-3 border-b bg-muted/20">
-      <div class="flex items-center justify-between">
-        <div>
-          <CardTitle class="text-base font-semibold">
-            电驱控制
-          </CardTitle>
-        </div>
+      <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <CardTitle class="text-base font-semibold">
+          电驱控制
+        </CardTitle>
+        <Button
+          size="sm"
+          variant="destructive"
+          class="w-full shrink-0 justify-center font-bold tracking-widest sm:w-auto sm:min-w-32"
+          :disabled="!axleStore.isConnected"
+          @click="handleEmergencyStop"
+        >
+          <AlertOctagonIcon data-icon="inline-start" />
+          紧急停机
+        </Button>
       </div>
     </CardHeader>
 
     <CardContent class="p-4 sm:p-5 flex-1 flex flex-col justify-between gap-4">
-      <!-- 使能与主动放电控制行 -->
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 p-4 bg-muted/25 rounded-xl border border-border/60">
-        <!-- MCU 使能控制 -->
-        <div class="flex items-center justify-between gap-3">
-          <div class="flex flex-col gap-1">
-            <div class="text-xs font-semibold text-muted-foreground">
-              驱动使能
-            </div>
-            <div class="text-sm font-bold flex items-center gap-2">
-              <span
-                class="size-2.5 rounded-full shrink-0 transition-colors"
-                :class="cn(
-                  form.mcu_en_cmd === 1
-                    ? 'bg-success shadow-xs shadow-success/50 animate-pulse'
-                    : 'bg-muted-foreground/50',
-                )"
-              />
-              <span :class="cn(form.mcu_en_cmd === 1 ? 'text-success' : 'text-foreground')">
-                {{ form.mcu_en_cmd === 1 ? '已使能' : '未使能' }}
-              </span>
-            </div>
-          </div>
-          <Button
-            size="sm"
-            :variant="form.mcu_en_cmd === 1 ? 'success' : 'outline'"
-            class="h-9 min-w-[92px] px-4 font-semibold transition-all"
-            :disabled="!axleStore.isConnected"
-            @click="handleToggleEnable"
-          >
-            {{ form.mcu_en_cmd === 1 ? '关闭使能' : '开启使能' }}
-          </Button>
-        </div>
+      <!-- 使能与主动放电操作：实际反馈集中展示在 MCU 实时反馈卡片。 -->
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3 bg-muted/25 rounded-xl border border-border/60">
+        <Button
+          size="sm"
+          :variant="form.mcu_en_cmd === 1 ? 'success' : 'outline'"
+          class="h-10 w-full px-4 font-semibold transition-all"
+          :disabled="!axleStore.isConnected"
+          @click="handleToggleEnable"
+        >
+          {{ form.mcu_en_cmd === 1 ? '关闭使能' : '开启使能' }}
+        </Button>
 
-        <!-- 主动放电控制 -->
-        <div class="flex items-center justify-between gap-3 sm:border-l sm:pl-4 border-border/60">
-          <div class="flex flex-col gap-1">
-            <div class="text-xs font-semibold text-muted-foreground">
-              母线放电
-            </div>
-            <div class="text-sm font-bold flex items-center gap-2">
-              <span
-                class="size-2.5 rounded-full shrink-0 transition-colors"
-                :class="cn(
-                  form.active_discharge === 1
-                    ? 'bg-warning shadow-xs shadow-warning/50 animate-pulse'
-                    : 'bg-success',
-                )"
-              />
-              <span :class="cn(form.active_discharge === 1 ? 'text-warning' : 'text-foreground')">
-                {{ form.active_discharge === 1 ? '放电中' : '正常' }}
-              </span>
-            </div>
-          </div>
-          <Button
-            size="sm"
-            :variant="form.active_discharge === 1 ? 'warning' : 'outline'"
-            class="h-9 min-w-[92px] px-4 font-semibold transition-all"
-            :disabled="!axleStore.isConnected"
-            @click="form.active_discharge = form.active_discharge === 1 ? 0 : 1; handleApplyCommand()"
-          >
-            {{ form.active_discharge === 1 ? '停止放电' : '触发放电' }}
-          </Button>
-        </div>
+        <Button
+          size="sm"
+          :variant="form.active_discharge === 1 ? 'warning' : 'outline'"
+          class="h-10 w-full px-4 font-semibold transition-all"
+          :disabled="!axleStore.isConnected"
+          @click="form.active_discharge = form.active_discharge === 1 ? 0 : 1; handleApplyCommand()"
+        >
+          {{ form.active_discharge === 1 ? '停止放电' : '触发放电' }}
+        </Button>
       </div>
 
       <!-- 挡位选择 -->
@@ -211,28 +194,29 @@ async function handleEmergencyStop() {
             当前: {{ GEAR_MAP[form.gear_sts] ?? '未知' }}
           </span>
         </div>
-        <div class="grid grid-cols-5 gap-2">
-          <Button
-            v-for="(label, gearKey) in GEAR_MAP"
-            :key="gearKey"
-            size="sm"
-            class="h-9 font-semibold transition-all"
-            :variant="form.gear_sts === Number(gearKey) ? 'default' : 'outline'"
-            @click="handleSetGear(Number(gearKey))"
+        <Select
+          :model-value="String(form.gear_sts)"
+          @update:model-value="handleSetGear"
+        >
+          <SelectTrigger class="h-9 w-full" aria-label="挡位选择">
+            <SelectValue placeholder="请选择挡位" />
+          </SelectTrigger>
+          <SelectContent
+            position="popper"
+            side="bottom"
+            align="start"
           >
-            <span class="font-mono text-sm font-bold">{{ label.split(' ')[0] }}</span>
-            <span
-              class="text-xs ml-1 transition-colors"
-              :class="cn(
-                form.gear_sts === Number(gearKey)
-                  ? 'text-primary-foreground font-medium opacity-100'
-                  : 'text-muted-foreground font-normal opacity-75',
-              )"
-            >
-              {{ label.split(' ')[1] }}
-            </span>
-          </Button>
-        </div>
+            <SelectGroup>
+              <SelectItem
+                v-for="gearKey in SELECTABLE_GEAR_IDS"
+                :key="gearKey"
+                :value="String(gearKey)"
+              >
+                {{ GEAR_MAP[gearKey] }}
+              </SelectItem>
+            </SelectGroup>
+          </SelectContent>
+        </Select>
       </div>
 
       <!-- 控制工作模式 -->
@@ -245,18 +229,28 @@ async function handleEmergencyStop() {
             当前: {{ WORK_MODE_MAP[form.work_mode_req] ?? '未知模式' }}
           </span>
         </div>
-        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
-          <Button
-            v-for="modeId in [1, 3, 2, 0]"
-            :key="modeId"
-            size="sm"
-            class="h-9 font-semibold transition-all"
-            :variant="form.work_mode_req === modeId ? 'default' : 'outline'"
-            @click="handleSetMode(modeId)"
+        <Select
+          :model-value="String(form.work_mode_req)"
+          @update:model-value="handleSetMode"
+        >
+          <SelectTrigger class="h-9 w-full" aria-label="工作模式">
+            <SelectValue placeholder="请选择工作模式" />
+          </SelectTrigger>
+          <SelectContent
+            position="popper"
+            side="bottom"
+            align="start"
           >
-            <span class="text-xs font-semibold">{{ WORK_MODE_MAP[modeId] }}</span>
-          </Button>
-        </div>
+            <SelectGroup>
+              <SelectItem value="1">
+                {{ WORK_MODE_MAP[1] }}
+              </SelectItem>
+              <SelectItem value="3">
+                {{ WORK_MODE_MAP[3] }}
+              </SelectItem>
+            </SelectGroup>
+          </SelectContent>
+        </Select>
       </div>
 
       <!-- 目标转矩设定输入框 -->
@@ -302,8 +296,8 @@ async function handleEmergencyStop() {
           <!-- 快速回车下发提示 -->
           <Button
             size="sm"
-            variant="warning"
-            class="h-11 shrink-0 px-3.5 font-semibold"
+            variant="default"
+            class="h-11 min-w-32 shrink-0 justify-center px-4 font-semibold sm:min-w-40"
             :disabled="isTorqueInvalid || axleStore.loading"
             @click="handleApplyCommand"
           >
@@ -361,8 +355,8 @@ async function handleEmergencyStop() {
           <!-- 快速回车下发提示 -->
           <Button
             size="sm"
-            variant="info"
-            class="h-11 shrink-0 px-3.5 font-semibold"
+            variant="default"
+            class="h-11 min-w-32 shrink-0 justify-center px-4 font-semibold sm:min-w-40"
             :disabled="isSpeedInvalid || axleStore.loading"
             @click="handleApplyCommand"
           >
@@ -377,19 +371,6 @@ async function handleEmergencyStop() {
         </p>
       </div>
 
-      <!-- 紧急制动按钮 -->
-      <Button
-        size="lg"
-        variant="destructive"
-        class="w-full font-bold tracking-widest gap-2 h-11 text-base mt-2"
-        :disabled="!axleStore.isConnected"
-        @click="handleEmergencyStop"
-      >
-        <AlertOctagonIcon data-icon="inline-start" />
-        紧急停机
-      </Button>
-
     </CardContent>
   </Card>
 </template>
-

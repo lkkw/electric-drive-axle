@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { AlertTriangleIcon } from '@lucide/vue'
 
 import { cn } from '@/lib/utils'
@@ -14,6 +14,7 @@ import { useAxleStore } from '@/stores/useAxleStore'
 import {
   FAULT_LEVEL_MAP,
   MOTOR_STATE_MAP,
+  TBOX_FAULT_LEVEL_MAP,
   WORK_MODE_MAP,
 } from '@/types/axle'
 
@@ -22,6 +23,66 @@ const axleStore = useAxleStore()
 const mcu1 = computed(() => axleStore.telemetry.mcu_1)
 const mcu2 = computed(() => axleStore.telemetry.mcu_2)
 const tbox = computed(() => axleStore.telemetry.mcu_tbox)
+const safetyConfig = computed(() => axleStore.telemetry.safety.config)
+
+const feedbackClock = ref(Date.now())
+let feedbackClockTimer: ReturnType<typeof setInterval> | undefined
+
+onMounted(() => {
+  feedbackClockTimer = setInterval(() => {
+    feedbackClock.value = Date.now()
+  }, 250)
+})
+
+onBeforeUnmount(() => {
+  if (feedbackClockTimer) {
+    clearInterval(feedbackClockTimer)
+  }
+})
+
+// 0x35B 期望以 10 ms 周期返回。这里留出 500 ms 裕量，超时后不把陈旧值当作实时状态。
+const hasFreshMcu2Feedback = computed(() => {
+  const receivedAt = axleStore.telemetry.mcu_2_last_rx_timestamp
+  return (
+    axleStore.isConnected
+    && receivedAt !== null
+    && feedbackClock.value - receivedAt * 1000 <= 500
+  )
+})
+
+// 0x35A 期望以 100 ms 周期返回。故障状态允许 1 s 裕量后再判定为未知。
+const hasFreshMcu1Feedback = computed(() => {
+  const receivedAt = axleStore.telemetry.mcu_1_last_rx_timestamp
+  return (
+    axleStore.isConnected
+    && receivedAt !== null
+    && feedbackClock.value - receivedAt * 1000 <= 1000
+  )
+})
+
+const lowVoltageStatusText = computed(() => {
+  if (!hasFreshMcu2Feedback.value) {
+    return '低压状态未知'
+  }
+
+  return mcu2.value.mcu_lv_sts === 1 ? '低压已上电' : '低压未上电'
+})
+
+const enableStatusText = computed(() => {
+  if (!hasFreshMcu2Feedback.value) {
+    return '使能状态未知'
+  }
+
+  return mcu2.value.mcu_en_sts === 1 ? 'MCU 已使能' : 'MCU 未使能'
+})
+
+const isSystemNormal = computed(() => {
+  return (
+    hasFreshMcu1Feedback.value
+    && mcu1.value.mcu_flt_levl === 0
+    && mcu1.value.mcu_tbox_flt_levl === 0
+  )
+})
 
 // 直流母线输入功率: P (kW) = U (V) * I (A) / 1000
 const dcPowerKw = computed(() => {
@@ -39,38 +100,55 @@ const mechPowerKw = computed(() => {
 <template>
   <Card class="border-border shadow-xs h-full flex flex-col">
     <CardHeader class="pb-3 border-b bg-muted/20">
-      <div class="flex items-center justify-between">
-        <div>
-          <CardTitle class="text-base font-semibold flex items-center gap-2">
+      <div class="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+        <div class="flex flex-wrap items-center gap-2">
+          <CardTitle class="text-base font-semibold">
             MCU 实时反馈
-            <Badge
-              v-if="mcu2.mcu_en_sts === 1"
-              variant="success"
-              class="font-mono text-xs px-1.5 py-0"
-            >
-              驱动使能
-            </Badge>
-            <Badge v-else variant="secondary" class="font-mono text-xs px-1.5 py-0">
-              未使能
-            </Badge>
           </CardTitle>
+          <Badge
+            :variant="hasFreshMcu2Feedback && mcu2.mcu_lv_sts === 1 ? 'success' : 'secondary'"
+            class="font-mono text-xs px-1.5 py-0"
+          >
+            {{ lowVoltageStatusText }}
+          </Badge>
+          <Badge
+            :variant="hasFreshMcu2Feedback && mcu2.mcu_en_sts === 1 ? 'success' : 'secondary'"
+            class="font-mono text-xs px-1.5 py-0"
+          >
+            {{ enableStatusText }}
+          </Badge>
         </div>
 
-        <div class="flex items-center gap-2">
+        <div class="flex flex-wrap items-center gap-2">
           <Badge
-            v-if="mcu1.mcu_flt_levl === 0"
+            v-if="!hasFreshMcu1Feedback"
+            variant="secondary"
+            class="font-mono text-xs px-1.5 py-0"
+          >
+            故障状态未知
+          </Badge>
+          <Badge
+            v-else-if="isSystemNormal"
             variant="outline"
             class="border-success/60 bg-success/5 text-success font-semibold text-xs"
           >
             系统正常
           </Badge>
           <Badge
-            v-else
+            v-else-if="mcu1.mcu_flt_levl !== 0"
             variant="destructive"
             class="animate-pulse font-bold text-xs"
           >
             <AlertTriangleIcon data-icon="inline-start" />
             {{ FAULT_LEVEL_MAP[mcu1.mcu_flt_levl]?.text ?? '故障报警' }}
+          </Badge>
+          <Badge
+            v-if="hasFreshMcu1Feedback && mcu1.mcu_tbox_flt_levl !== 0"
+            variant="destructive"
+            class="animate-pulse font-bold text-xs"
+          >
+            <AlertTriangleIcon data-icon="inline-start" />
+            {{ TBOX_FAULT_LEVEL_MAP[mcu1.mcu_tbox_flt_levl] ?? '温度故障报警' }}
           </Badge>
         </div>
       </div>
@@ -155,7 +233,10 @@ const mechPowerKw = computed(() => {
             <span class="text-xs font-normal text-muted-foreground font-sans">℃</span>
           </div>
           <div class="text-[11px] text-muted-foreground">
-            极限保护阈值: <span class="font-mono font-semibold text-foreground">150</span> ℃
+            自动停机阈值:
+            <span class="font-mono font-semibold text-foreground">
+              {{ safetyConfig.enabled ? `${safetyConfig.max_motor_temp_c} ℃` : '未启用' }}
+            </span>
           </div>
         </div>
 
@@ -176,21 +257,14 @@ const mechPowerKw = computed(() => {
             <span class="text-xs font-normal text-muted-foreground font-sans">℃</span>
           </div>
           <div class="text-[11px] text-muted-foreground">
-            极限保护阈值: <span class="font-mono font-semibold text-foreground">85</span> ℃
+            温度故障由 MCU 反馈位指示
           </div>
         </div>
 
-        <!-- 电机运行状态与低压供电 -->
+        <!-- 电机运行状态 -->
         <div class="p-3.5 rounded-xl border border-border/60 bg-muted/25 flex flex-col justify-between gap-1.5">
           <div class="flex items-center justify-between text-xs font-semibold text-muted-foreground">
             <span>运行状态</span>
-            <Badge
-              v-if="mcu2.mcu_lv_sts !== 1"
-              variant="secondary"
-              class="text-[10px] px-1.5 py-0 text-muted-foreground"
-            >
-              未上电
-            </Badge>
           </div>
           <div class="h-8 flex items-center gap-2">
             <span
@@ -206,9 +280,6 @@ const mechPowerKw = computed(() => {
             <span class="text-base font-semibold text-foreground truncate">
               {{ MOTOR_STATE_MAP[tbox.st_mtr] ?? '未知' }}
             </span>
-          </div>
-          <div class="text-[11px] text-muted-foreground">
-            低压供电: <span class="font-mono font-semibold text-foreground">{{ mcu2.mcu_lv_sts === 1 ? 'OK' : 'OFF' }}</span>
           </div>
         </div>
       </div>

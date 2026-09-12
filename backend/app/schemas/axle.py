@@ -1,5 +1,7 @@
 """Pydantic v2 schemas for Electric Drive Axle control and telemetry."""
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -110,6 +112,55 @@ class McuTboxTelemetry(BaseModel):
     mcu_tbox_life: int = 0  # 循环计数器
 
 
+class AxleSafetyConfig(BaseModel):
+    """上位机自动紧急停机阈值。
+
+    数值边界来自当前 DBC 信号量程，而非 MCU 的标定或硬件保护参数。
+    默认开启，实时反馈越限时会触发软件急停。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    max_motor_speed_rpm: int = Field(
+        default=3000,
+        gt=0,
+        le=12000,
+        description="电机绝对转速自动停机阈值 (RPM)",
+    )
+    max_motor_torque_nm: float = Field(
+        default=10.0,
+        gt=0.0,
+        le=3000.0,
+        description="电机绝对转矩自动停机阈值 (Nm)",
+    )
+    max_motor_temp_c: float = Field(
+        default=150.0,
+        gt=0.0,
+        le=210.0,
+        description="电机温度自动停机阈值 (℃)",
+    )
+
+
+class AxleSafetyTrip(BaseModel):
+    """一次由上位机安全策略触发的急停事件。"""
+
+    trip_id: int
+    metric: Literal["motor_speed", "motor_torque", "motor_temperature"]
+    actual_value: float
+    threshold: float
+    unit: Literal["RPM", "Nm", "℃"]
+    message: str
+    triggered_at: str
+
+
+class AxleSafetyStatus(BaseModel):
+    """安全配置及最近一次自动停机事件。"""
+
+    config: AxleSafetyConfig = Field(default_factory=AxleSafetyConfig)
+    last_trip: AxleSafetyTrip | None = None
+
+
 class CanFrameItem(BaseModel):
     """单条 CAN 报文记录（用于原始报文监视与总线诊断）。"""
 
@@ -148,8 +199,15 @@ class AxleTelemetry(BaseModel):
     baud_rate: int = 250000
     command: VcuCommandState = Field(default_factory=VcuCommandState)
     mcu_1: McuDriveMotor1Telemetry = Field(default_factory=McuDriveMotor1Telemetry)
+    # 仅在成功解码 0x35A 后更新，用于判断 MCU 故障反馈是否新鲜。
+    mcu_1_last_rx_timestamp: float | None = None
     mcu_2: McuDriveMotor2Telemetry = Field(default_factory=McuDriveMotor2Telemetry)
+    # 仅在成功解码 0x35B 后更新，用于区分“未使能/未上电”和“未收到反馈”。
+    mcu_2_last_rx_timestamp: float | None = None
     mcu_tbox: McuTboxTelemetry = Field(default_factory=McuTboxTelemetry)
+    # 仅在成功解码 0x35C 后更新，自动温度保护不使用陈旧温度值。
+    mcu_tbox_last_rx_timestamp: float | None = None
+    safety: AxleSafetyStatus = Field(default_factory=AxleSafetyStatus)
     tx_frame_count: int = 0
     rx_frame_count: int = 0
     tx_error_count: int = 0

@@ -21,6 +21,7 @@ import type {
 const createInitialTelemetry = (): AxleTelemetry => ({
   connected: false,
   is_transmitting: false,
+  is_emergency_locked: false,
   device_type: 4,
   device_index: 0,
   channel: 0,
@@ -43,6 +44,7 @@ const createInitialTelemetry = (): AxleTelemetry => ({
     mcu_life_1: 0,
     mcu_tbox_flt_levl: 0,
   },
+  mcu_1_last_rx_timestamp: null,
   mcu_2: {
     mcu_motor_tor_max: 0,
     mcu_act_motor_spd: 0,
@@ -55,6 +57,7 @@ const createInitialTelemetry = (): AxleTelemetry => ({
     mcu_mcu_temp_extre_over: 0,
     mcu_life_2: 0,
   },
+  mcu_2_last_rx_timestamp: null,
   mcu_tbox: {
     num_mtr: 1,
     num_mtr_srl: 1,
@@ -62,6 +65,16 @@ const createInitialTelemetry = (): AxleTelemetry => ({
     mcu_motor_temp: 25,
     mcu_ctller_temp: 25,
     mcu_tbox_life: 0,
+  },
+  mcu_tbox_last_rx_timestamp: null,
+  safety: {
+    config: {
+      enabled: true,
+      max_motor_speed_rpm: 3000,
+      max_motor_torque_nm: 10,
+      max_motor_temp_c: 150,
+    },
+    last_trip: null,
   },
   tx_frame_count: 0,
   rx_frame_count: 0,

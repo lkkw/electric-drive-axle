@@ -3,6 +3,7 @@ import type { SidebarProps } from '@/components/ui/sidebar'
 
 import {
   Radio,
+  ShieldCheck,
   Sliders,
   Zap,
 } from '@lucide/vue'
@@ -26,7 +27,7 @@ const props = withDefaults(defineProps<SidebarProps>(), {
 const route = useRoute()
 
 // ---------------------------------------------------------------------------
-// 侧边栏导航：仅保留 CAN 通讯诊断与电驱桥控制台
+// 侧边栏导航：通讯、控制与上位机安全策略
 // ---------------------------------------------------------------------------
 const navItems = [
   {
@@ -38,6 +39,11 @@ const navItems = [
     title: '电驱桥控制台',
     url: '/axle',
     icon: Sliders,
+  },
+  {
+    title: '安全配置',
+    url: '/safety',
+    icon: ShieldCheck,
   },
 ]
 

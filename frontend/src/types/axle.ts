@@ -61,6 +61,28 @@ export interface McuTboxTelemetry {
   mcu_tbox_life: number
 }
 
+export interface AxleSafetyConfig {
+  enabled: boolean
+  max_motor_speed_rpm: number
+  max_motor_torque_nm: number
+  max_motor_temp_c: number
+}
+
+export interface AxleSafetyTrip {
+  trip_id: number
+  metric: 'motor_speed' | 'motor_torque' | 'motor_temperature'
+  actual_value: number
+  threshold: number
+  unit: 'RPM' | 'Nm' | '℃'
+  message: string
+  triggered_at: string
+}
+
+export interface AxleSafetyStatus {
+  config: AxleSafetyConfig
+  last_trip: AxleSafetyTrip | null
+}
+
 export interface CanFrameItem {
   timestamp: string
   direction: 'TX' | 'RX'
@@ -81,14 +103,19 @@ export interface CanSendRawFrameRequest {
 export interface AxleTelemetry {
   connected: boolean
   is_transmitting: boolean
+  is_emergency_locked: boolean
   device_type: number
   device_index: number
   channel: number
   baud_rate: number
   command: VcuCommandState
   mcu_1: McuDriveMotor1Telemetry
+  mcu_1_last_rx_timestamp: number | null
   mcu_2: McuDriveMotor2Telemetry
+  mcu_2_last_rx_timestamp: number | null
   mcu_tbox: McuTboxTelemetry
+  mcu_tbox_last_rx_timestamp: number | null
+  safety: AxleSafetyStatus
   tx_frame_count: number
   rx_frame_count: number
   tx_error_count: number
@@ -127,6 +154,13 @@ export const FAULT_LEVEL_MAP: Record<number, { text: string }> = {
   2: { text: '二级故障(中度)' },
   3: { text: '三级故障(严重)' },
   4: { text: '四级故障(致命)' },
+}
+
+export const TBOX_FAULT_LEVEL_MAP: Record<number, string> = {
+  0: '温度正常',
+  1: '温度一级故障',
+  2: '温度故障（限功）',
+  3: '温度故障（下高压）',
 }
 
 export const MOTOR_STATE_MAP: Record<number, string> = {

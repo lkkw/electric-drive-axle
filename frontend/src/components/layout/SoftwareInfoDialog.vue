@@ -1,10 +1,9 @@
 <script setup lang="ts">
 import {
-  Activity,
   Building2,
   CheckCircle2,
   Cpu,
-  Layers,
+  Phone,
   Radio,
   Zap,
 } from '@lucide/vue'
@@ -25,8 +24,8 @@ import { Separator } from '@/components/ui/separator'
 /**
  * 软件信息弹窗组件 (SoftwareInfoDialog)
  *
- * 使用 shadcn/vue Dialog 原语构建，展示电驱系统研究所及测控上位机的软件版本、
- * 架构配置、硬件驱动及通讯协议规格。
+ * 使用 shadcn/vue Dialog 原语构建，展示电驱系统研究所及测控上位机的软件规格、
+ * 硬件驱动、通讯协议与技术支持信息。
  */
 const open = defineModel<boolean>('open', { default: false })
 
@@ -41,34 +40,28 @@ interface SystemSpec {
 const specs: readonly SystemSpec[] = [
   {
     label: '研发单位',
-    value: '电驱系统研究所 (Electric Drive System Lab)',
+    value: '电驱系统研究所',
     icon: Building2,
   },
   {
     label: '系统定位',
-    value: '商用车电驱桥台架测控与诊断上位机',
+    value: '电驱桥台架测控与诊断上位机',
     icon: Zap,
   },
   {
     label: '总线协议',
-    value: 'DFAC Matrix 11898 标准 CAN 协议 (500 kbps)',
+    value: '11898 标准 CAN 协议',
     icon: Radio,
-    badge: '11898-V0.9',
   },
   {
     label: '硬件驱动',
-    value: 'ZLG CAN 适配器 (USBCAN / CANFD / 虚拟仿真)',
+    value: 'ZLG CAN 适配器 (USBCAN / CANFD)',
     icon: Cpu,
   },
   {
-    label: '技术架构',
-    value: 'Vue 3.5 + Vite + TypeScript / FastAPI + asyncio',
-    icon: Layers,
-  },
-  {
-    label: '工位状态',
-    value: '台架 #01 · CAN 驱动就绪 · 服务通信正常',
-    icon: Activity,
+    label: '技术支持',
+    value: '17873554355',
+    icon: Phone,
   },
 ]
 </script>
