@@ -2,7 +2,6 @@
 import { computed, reactive, ref, watch } from "vue";
 import { AlertOctagonIcon, SendIcon } from "@lucide/vue";
 
-import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -298,23 +297,15 @@ async function handleEmergencyStop() {
           </Select>
         </Field>
 
-        <!-- 根据工作模式展示唯一的目标值输入框 -->
+        <!-- 根据工作模式展示目标值输入与下发 -->
         <Field
           :data-invalid="isTargetInvalid || undefined"
           :data-disabled="!axleStore.isConnected || undefined"
-          class="flex flex-col gap-3 p-4 rounded-xl border transition-colors"
-          :class="
-            cn(
-              isTargetInvalid
-                ? 'border-destructive/40 bg-destructive/5'
-                : 'border-border/80 bg-muted/20',
-            )
-          "
         >
           <div class="flex items-center justify-between">
             <FieldLabel
               :for="TARGET_INPUT_ID"
-              class="text-sm font-semibold text-foreground"
+              class="text-xs font-semibold text-muted-foreground"
             >
               {{ targetConfig.label }}
             </FieldLabel>
@@ -334,7 +325,7 @@ async function handleEmergencyStop() {
                 :min="targetConfig.min"
                 :max="targetConfig.max"
                 :placeholder="targetConfig.placeholder"
-                class="h-11 w-full px-3 pr-14 text-center text-lg font-mono font-bold tracking-tight shadow-2xs transition-all [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-inner-spin-button]:m-0"
+                class="h-9 w-full px-3 pr-12 font-mono font-bold tracking-tight [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-inner-spin-button]:m-0"
                 :aria-invalid="isTargetInvalid || undefined"
                 :disabled="!axleStore.isConnected"
                 @focus="isTargetEditing = true"
@@ -351,7 +342,7 @@ async function handleEmergencyStop() {
             <Button
               size="sm"
               variant="default"
-              class="h-11 min-w-32 shrink-0 justify-center px-4 font-semibold sm:min-w-40"
+              class="h-9 min-w-28 shrink-0 justify-center px-4 font-semibold sm:min-w-36"
               :disabled="
                 isTargetInvalid || axleStore.loading || !axleStore.isConnected
               "

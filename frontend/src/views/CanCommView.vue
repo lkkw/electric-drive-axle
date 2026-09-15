@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import {
   AlertTriangleIcon,
+  ArrowDownToLineIcon,
   CheckCircle2Icon,
   CircleOffIcon,
   PauseIcon,
@@ -33,11 +34,13 @@ import {
   FieldGroup,
   FieldLabel,
 } from '@/components/ui/field'
+import { ScrollArea } from '@/components/ui/scroll-area'
 import { Spinner } from '@/components/ui/spinner'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { useAxleStore } from '@/stores/useAxleStore'
 import type { CanConnectRequest, CanFrameItem } from '@/types/axle'
+import { processFrames, type ProcessedFrame } from './canCommUtils'
 
 const axleStore = useAxleStore()
 
@@ -53,7 +56,7 @@ const connForm = reactive<CanConnectRequest>({
 const isPaused = ref(false)
 const directionFilter = ref<'ALL' | 'TX' | 'RX'>('ALL')
 const searchFilter = ref('')
-const viewMode = ref<'TRACE' | 'GROUP'>('TRACE') // 时间流 vs ID聚合
+const viewMode = ref<'TRACE' | 'GROUP'>('GROUP') // 报文展示模式：默认采用 ID 聚合模式 (GROUP)，亦可切换为时间流 (TRACE)
 const MAX_RENDERED_FRAMES = 200
 
 function setViewMode(value: unknown) {
@@ -71,46 +74,62 @@ function setDirectionFilter(value: unknown) {
 // 本地帧缓冲（暂停时固定当前画面）
 const displayedFrames = ref<CanFrameItem[]>([])
 
-type ProcessedFrame = CanFrameItem & { count?: number }
+// 自动滚动状态与视口引用（时间流模式下默认自动滚动锁定至最新帧）
+const autoScroll = ref(true)
+const scrollAreaRef = ref<{ $el: HTMLElement } | null>(null)
+
+function getScrollAreaViewport(): HTMLElement | null {
+  const el = scrollAreaRef.value?.$el as HTMLElement | undefined
+  return el?.querySelector('[data-slot="scroll-area-viewport"]') ?? null
+}
+
+function scrollToBottom() {
+  if (!autoScroll.value || isPaused.value || viewMode.value !== 'TRACE') {
+    return
+  }
+  nextTick(() => {
+    const el = getScrollAreaViewport()
+    if (el) {
+      el.scrollTop = el.scrollHeight
+    }
+  })
+}
+
+function handleViewportScroll(event: Event) {
+  const target = event.target as HTMLElement | null
+  if (!target || viewMode.value !== 'TRACE') return
+  // 若距离底部在 32px 以内，视为处于底部，恢复自动滚动；
+  // 若用户主动向上回翻查看历史帧，自动暂停跟随，避免画面被反复拉到底部
+  const isNearBottom = target.scrollHeight - target.scrollTop - target.clientHeight < 32
+  autoScroll.value = isNearBottom
+}
+
+function toggleAutoScroll() {
+  autoScroll.value = !autoScroll.value
+  if (autoScroll.value) {
+    scrollToBottom()
+  }
+}
+
+watch(() => axleStore.telemetry.recent_frames.length, () => {
+  scrollToBottom()
+})
+
+watch(viewMode, (newMode) => {
+  if (newMode === 'TRACE') {
+    nextTick(scrollToBottom)
+  }
+})
 
 // 监听 store 变化，先过滤再按需分组
 const processedFrames = computed<ProcessedFrame[]>(() => {
-  const sourceFrames = isPaused.value ? displayedFrames.value : axleStore.telemetry.recent_frames
-  const frames = sourceFrames.slice(-MAX_RENDERED_FRAMES)
-  const query = searchFilter.value.trim().toLowerCase()
-
-  const result = frames.filter((frame) => {
-    if (directionFilter.value !== 'ALL' && frame.direction !== directionFilter.value) {
-      return false
-    }
-    if (query) {
-      const matchesId = frame.can_id_hex.toLowerCase().includes(query)
-      const matchesName = frame.name.toLowerCase().includes(query)
-      const matchesData = frame.data_hex.toLowerCase().includes(query)
-      if (!matchesId && !matchesName && !matchesData) {
-        return false
-      }
-    }
-    return true
+  return processFrames({
+    frames: isPaused.value ? displayedFrames.value : axleStore.telemetry.recent_frames,
+    viewMode: viewMode.value,
+    directionFilter: directionFilter.value,
+    searchFilter: searchFilter.value,
+    maxFrames: MAX_RENDERED_FRAMES,
   })
-
-  if (viewMode.value === 'GROUP') {
-    const map = new Map<string, ProcessedFrame>()
-    for (const frame of result) {
-      const key = `${frame.direction}-${frame.can_id_hex}`
-      if (map.has(key)) {
-        const existing = map.get(key)!
-        const newCount = (existing.count || 1) + 1
-        Object.assign(existing, frame)
-        existing.count = newCount
-      } else {
-        map.set(key, { ...frame, count: 1 })
-      }
-    }
-    return Array.from(map.values()).sort((a, b) => a.can_id_hex.localeCompare(b.can_id_hex))
-  }
-
-  return result
 })
 
 function togglePause() {
@@ -119,6 +138,7 @@ function togglePause() {
     isPaused.value = true
   } else {
     isPaused.value = false
+    scrollToBottom()
   }
 }
 
@@ -153,16 +173,23 @@ onMounted(async () => {
   connForm.device_index = t.device_index
   connForm.channel = t.channel
   connForm.baud_rate = t.baud_rate
+
+  nextTick(() => {
+    const el = getScrollAreaViewport()
+    el?.addEventListener('scroll', handleViewportScroll, { passive: true })
+  })
 })
 
 onBeforeUnmount(() => {
+  const el = getScrollAreaViewport()
+  el?.removeEventListener('scroll', handleViewportScroll)
   // 其他页面仍保留核心遥测流，但不再搬运原始报文列表。
   axleStore.startSse(false)
 })
 </script>
 
 <template>
-  <div class="flex flex-col gap-6 w-full min-h-[calc(100vh-3rem)]">
+  <div class="flex flex-col gap-6 w-full">
     <!-- 顶部导航标题栏 -->
     <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b pb-4 shrink-0">
       <div>
@@ -382,7 +409,7 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- 原始报文监视器 (Bus Monitor) -->
-    <Card class="border-border shadow-xs flex-1 flex flex-col min-h-[400px]">
+    <Card class="border-border shadow-xs flex flex-col">
       <CardHeader class="pb-3 border-b bg-muted/20 shrink-0">
         <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <div>
@@ -402,11 +429,11 @@ onBeforeUnmount(() => {
               aria-label="报文视图模式"
               @update:model-value="setViewMode"
             >
-              <ToggleGroupItem value="TRACE">
-                时间流
-              </ToggleGroupItem>
               <ToggleGroupItem value="GROUP">
                 ID 聚合
+              </ToggleGroupItem>
+              <ToggleGroupItem value="TRACE">
+                时间流
               </ToggleGroupItem>
             </ToggleGroup>
 
@@ -438,22 +465,36 @@ onBeforeUnmount(() => {
               class="w-32 sm:w-44 font-mono"
             />
 
+            <!-- 自动跟随滚屏（时间流模式） -->
+            <Button
+              v-if="viewMode === 'TRACE'"
+              size="sm"
+              variant="outline"
+              class="h-8 px-2.5 text-xs transition-none"
+              :class="autoScroll ? 'bg-primary/10 text-primary border-primary/30 font-medium' : 'text-muted-foreground'"
+              :title="autoScroll ? '当前正在自动跟随最新报文滚动' : '已暂停跟随，点击恢复自动滚到底部'"
+              @click="toggleAutoScroll"
+            >
+              <component :is="autoScroll ? ArrowDownToLineIcon : PauseIcon" data-icon="inline-start" />
+              {{ autoScroll ? '滚屏跟随' : '暂停跟随' }}
+            </Button>
+
             <!-- 暂停/继续按钮 -->
             <Button
               size="sm"
               variant="outline"
-              class="h-8 px-2.5 text-xs"
+              class="h-8 px-2.5 text-xs transition-none"
               @click="togglePause"
             >
               <component :is="isPaused ? PlayIcon : PauseIcon" data-icon="inline-start" />
-              {{ isPaused ? '继续监视' : '暂停滚动' }}
+              {{ isPaused ? '继续监视' : '暂停刷新' }}
             </Button>
 
             <!-- 清空按钮 -->
             <Button
               size="sm"
               variant="outline"
-              class="h-8 px-2.5 text-xs text-destructive hover:text-destructive"
+              class="h-8 px-2.5 text-xs text-destructive hover:text-destructive transition-none"
               @click="handleClearFrames"
             >
               <Trash2Icon data-icon="inline-start" />
@@ -463,12 +504,15 @@ onBeforeUnmount(() => {
         </div>
       </CardHeader>
 
-      <CardContent class="p-0 flex-1 overflow-hidden">
-        <!-- 监视表格 -->
-        <div class="h-full overflow-y-auto font-mono text-xs divide-y divide-border/60">
+      <CardContent class="p-0 overflow-hidden">
+        <!-- 监视表格：使用 ScrollArea 约束视口高度，配合 overflow-visible 保证 TableHeader 粘性吸顶 -->
+        <ScrollArea
+          ref="scrollAreaRef"
+          class="h-[460px] xl:h-[540px] w-full font-mono text-xs [&_[data-slot=table-container]]:overflow-visible"
+        >
           <Table class="w-full table-fixed text-left">
-            <TableHeader class="sticky top-0 bg-muted/80 backdrop-blur-xs text-muted-foreground text-[11px] uppercase border-b border-border/80">
-              <TableRow>
+            <TableHeader class="sticky top-0 z-10 bg-muted/95 backdrop-blur-xs text-muted-foreground text-[11px] uppercase border-b border-border/80 shadow-xs">
+              <TableRow class="hover:bg-transparent">
                 <TableHead class="w-12 px-2 py-2.5 font-semibold sm:w-20 sm:px-3">{{ viewMode === 'TRACE' ? '序号' : '计数' }}</TableHead>
                 <TableHead class="hidden px-3 py-2.5 font-semibold sm:table-cell sm:w-32">时间戳</TableHead>
                 <TableHead class="w-16 px-2 py-2.5 font-semibold sm:w-24 sm:px-4">方向</TableHead>
@@ -485,8 +529,7 @@ onBeforeUnmount(() => {
               <TableRow
                 v-for="item in processedFrames"
                 :key="viewMode === 'TRACE' ? item.sequence : `${item.direction}-${item.can_id_hex}`"
-                class="hover:bg-muted/30 transition-colors"
-                :class="cn(item.direction === 'TX' && 'bg-info/5')"
+                class="hover:bg-muted/40 transition-none"
               >
                 <TableCell class="px-2 py-2 text-muted-foreground sm:px-3">
                   <span v-if="viewMode === 'TRACE'">#{{ item.sequence }}</span>
@@ -525,7 +568,7 @@ onBeforeUnmount(() => {
               </TableRow>
             </TableBody>
           </Table>
-        </div>
+        </ScrollArea>
       </CardContent>
     </Card>
   </div>
