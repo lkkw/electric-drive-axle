@@ -38,8 +38,8 @@ defineProps<{
 
 <template>
   <SidebarGroup>
-    <SidebarGroupLabel>台架导航</SidebarGroupLabel>
-    <SidebarMenu>
+    <SidebarGroupLabel class="mb-1.5">台架导航</SidebarGroupLabel>
+    <SidebarMenu class="gap-2">
       <template v-for="item in items" :key="item.title">
         <!-- 有子菜单的项：Collapsible 折叠展开 -->
         <Collapsible
@@ -50,7 +50,7 @@ defineProps<{
         >
           <SidebarMenuItem>
             <CollapsibleTrigger as-child>
-              <SidebarMenuButton :tooltip="item.title">
+              <SidebarMenuButton size="md" :tooltip="item.title">
                 <component :is="item.icon" v-if="item.icon" />
                 <span>{{ item.title }}</span>
                 <ChevronRight
@@ -76,6 +76,7 @@ defineProps<{
         <SidebarMenuItem v-else>
           <SidebarMenuButton
             as-child
+            size="md"
             :is-active="item.isActive"
             :tooltip="item.title"
           >

@@ -46,6 +46,7 @@ export const sidebarMenuButtonVariants = cva(
       size: {
         default: 'h-8 text-sm',
         sm: 'h-7 text-xs',
+        md: 'h-9.5 text-sm px-2.5',
         lg: 'h-12 text-sm group-data-[collapsible=icon]:p-0!',
       },
     },
