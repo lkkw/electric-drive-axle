@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
-import { AlertTriangleIcon } from '@lucide/vue'
+import { computed, ref, watch } from "vue";
+import { AlertTriangleIcon } from "@lucide/vue";
 
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
-import { Button } from '@/components/ui/button'
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -11,27 +11,27 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from '@/components/ui/dialog'
-import { useAxleStore } from '@/stores/useAxleStore'
+} from "@/components/ui/dialog";
+import { useAxleStore } from "@/stores/useAxleStore";
 
-const axleStore = useAxleStore()
-const isOpen = ref(false)
-const displayedTripId = ref<number | null>(null)
-const trip = computed(() => axleStore.telemetry.safety.last_trip)
+const axleStore = useAxleStore();
+const isOpen = ref(false);
+const displayedTripId = ref<number | null>(null);
+const trip = computed(() => axleStore.telemetry.safety.last_trip);
 
 watch(
   () => trip.value?.trip_id,
   (tripId) => {
     if (tripId !== undefined && tripId !== displayedTripId.value) {
-      displayedTripId.value = tripId
-      isOpen.value = true
+      displayedTripId.value = tripId;
+      isOpen.value = true;
     }
   },
   { immediate: true },
-)
+);
 
 function acknowledge() {
-  isOpen.value = false
+  isOpen.value = false;
 }
 </script>
 
@@ -54,13 +54,12 @@ function acknowledge() {
       </Alert>
 
       <DialogDescription>
-        请现场确认 MCU 与台架已进入安全状态。此弹窗仅确认上位机软件已发出停机请求，不能替代硬件安全状态确认。
+        请现场确认 MCU
+        与台架已进入安全状态。此弹窗仅确认上位机软件已发出停机请求，不能替代硬件安全状态确认。
       </DialogDescription>
 
       <DialogFooter>
-        <Button type="button" @click="acknowledge">
-          我已知悉
-        </Button>
+        <Button type="button" @click="acknowledge"> 我已知悉 </Button>
       </DialogFooter>
     </DialogContent>
   </Dialog>

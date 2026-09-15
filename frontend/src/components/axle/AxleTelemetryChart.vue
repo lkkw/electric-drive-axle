@@ -133,7 +133,7 @@ onMounted(() => {
         <VChart
           :option="chartOption"
           autoresize
-          class="h-full w-full"
+          class="size-full"
         />
       </div>
     </CardContent>

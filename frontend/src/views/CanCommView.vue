@@ -6,7 +6,6 @@ import {
   CircleOffIcon,
   PauseIcon,
   PlayIcon,
-  RefreshCwIcon,
   Trash2Icon,
 } from '@lucide/vue'
 
@@ -29,6 +28,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import {
+  Field,
+  FieldGroup,
+  FieldLabel,
+} from '@/components/ui/field'
+import { Spinner } from '@/components/ui/spinner'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { useAxleStore } from '@/stores/useAxleStore'
@@ -194,10 +199,10 @@ onBeforeUnmount(() => {
           </CardHeader>
 
           <CardContent class="p-4 sm:p-5 flex flex-col gap-4">
-            <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3.5">
+            <FieldGroup class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3.5">
               <!-- 设备型号 -->
-              <div class="flex flex-col gap-1.5">
-                <label class="text-xs font-semibold text-muted-foreground">设备型号</label>
+              <Field>
+                <FieldLabel class="text-xs font-semibold text-muted-foreground">设备型号</FieldLabel>
                 <Select
                   :model-value="String(connForm.device_type)"
                   @update:model-value="(v) => connForm.device_type = Number(v)"
@@ -218,11 +223,11 @@ onBeforeUnmount(() => {
                     </SelectGroup>
                   </SelectContent>
                 </Select>
-              </div>
+              </Field>
 
               <!-- 设备索引 -->
-              <div class="flex flex-col gap-1.5">
-                <label class="text-xs font-semibold text-muted-foreground">设备索引 (Index)</label>
+              <Field>
+                <FieldLabel class="text-xs font-semibold text-muted-foreground">设备索引 (Index)</FieldLabel>
                 <Input
                   v-model.number="connForm.device_index"
                   type="number"
@@ -231,11 +236,11 @@ onBeforeUnmount(() => {
                   :disabled="axleStore.isConnected || axleStore.loading"
                   class="font-mono"
                 />
-              </div>
+              </Field>
 
               <!-- 通道号 -->
-              <div class="flex flex-col gap-1.5">
-                <label class="text-xs font-semibold text-muted-foreground">CAN 通道</label>
+              <Field>
+                <FieldLabel class="text-xs font-semibold text-muted-foreground">CAN 通道</FieldLabel>
                 <Select
                   :model-value="String(connForm.channel)"
                   @update:model-value="(v) => connForm.channel = Number(v)"
@@ -256,11 +261,11 @@ onBeforeUnmount(() => {
                     </SelectGroup>
                   </SelectContent>
                 </Select>
-              </div>
+              </Field>
 
               <!-- 波特率 -->
-              <div class="flex flex-col gap-1.5">
-                <label class="text-xs font-semibold text-muted-foreground">通信波特率</label>
+              <Field>
+                <FieldLabel class="text-xs font-semibold text-muted-foreground">通信波特率</FieldLabel>
                 <Select
                   :model-value="String(connForm.baud_rate)"
                   @update:model-value="(v) => connForm.baud_rate = Number(v)"
@@ -282,8 +287,8 @@ onBeforeUnmount(() => {
                     </SelectGroup>
                   </SelectContent>
                 </Select>
-              </div>
-            </div>
+              </Field>
+            </FieldGroup>
 
             <!-- 操作按钮 -->
             <div class="pt-2 flex items-center justify-end">
@@ -294,7 +299,7 @@ onBeforeUnmount(() => {
                   :disabled="axleStore.loading"
                   @click="handleConnect"
                 >
-                  <RefreshCwIcon v-if="axleStore.loading" data-icon="inline-start" class="animate-spin" />
+                  <Spinner v-if="axleStore.loading" data-icon="inline-start" />
                   打开设备并启动通道
                 </Button>
 
@@ -305,7 +310,7 @@ onBeforeUnmount(() => {
                   :disabled="axleStore.loading"
                   @click="handleDisconnect"
                 >
-                  <RefreshCwIcon v-if="axleStore.loading" data-icon="inline-start" class="animate-spin" />
+                  <Spinner v-if="axleStore.loading" data-icon="inline-start" />
                   停止通信并释放设备
                 </Button>
               </div>

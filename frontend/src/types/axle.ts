@@ -163,6 +163,17 @@ export const TBOX_FAULT_LEVEL_MAP: Record<number, string> = {
   3: '温度故障（下高压）',
 }
 
+/** 安全配置保存生效记录快照 */
+export interface SafetyConfigRecord {
+  id: string
+  timestamp: string
+  rawTimestamp: number
+  enabled: boolean
+  max_motor_speed_rpm: number
+  max_motor_torque_nm: number
+  max_motor_temp_c: number
+}
+
 export const MOTOR_STATE_MAP: Record<number, string> = {
   1: '耗电驱动',
   2: '发电制动',
