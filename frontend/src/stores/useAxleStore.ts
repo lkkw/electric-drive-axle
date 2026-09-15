@@ -29,7 +29,7 @@ const createInitialTelemetry = (): AxleTelemetry => ({
   command: {
     torque_req: 0,
     speed_req: 0,
-    work_mode_req: 1,
+    work_mode_req: 3,
     mcu_en_cmd: 0,
     gear_sts: 3,
     active_discharge: 0,

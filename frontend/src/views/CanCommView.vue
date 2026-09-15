@@ -151,6 +151,13 @@ async function handleDisconnect() {
 onMounted(async () => {
   await axleStore.refreshStatus()
   axleStore.startSse()
+
+  // 从 store 的遥测快照恢复表单，避免组件重建后硬编码默认值覆盖用户选择
+  const t = axleStore.telemetry
+  connForm.device_type = t.device_type
+  connForm.device_index = t.device_index
+  connForm.channel = t.channel
+  connForm.baud_rate = t.baud_rate
 })
 
 onBeforeUnmount(() => {

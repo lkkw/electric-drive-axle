@@ -34,7 +34,7 @@ const TARGET_INPUT_ID = "motor-target-value";
 // 本地控制指令表单
 const form = reactive({
   target_value: 0,
-  work_mode_req: 1, // 转矩模式
+  work_mode_req: 3, // 转速模式
   mcu_en_cmd: 0, // 0: 未使能, 1: 使能
   gear_sts: 3, // 3: 空挡 N
   active_discharge: 0,
@@ -83,7 +83,7 @@ const isTargetInvalid = computed(() => {
 });
 
 function syncTargetFromCommand(command: VcuCommandState) {
-  form.work_mode_req = command.work_mode_req === 3 ? 3 : 1;
+  form.work_mode_req = command.work_mode_req === 1 ? 1 : 3;
   form.target_value =
     form.work_mode_req === 1 ? command.torque_req : command.speed_req;
 }

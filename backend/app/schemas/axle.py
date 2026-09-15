@@ -67,7 +67,7 @@ class VcuCommandState(BaseModel):
 
     torque_req: float = 0.0
     speed_req: int = 0
-    work_mode_req: int = 1  # 默认转矩模式
+    work_mode_req: int = 3  # 默认转速模式
     mcu_en_cmd: int = 0  # 默认未使能
     gear_sts: int = 3  # 默认空挡 N
     active_discharge: int = 0  # 默认不放电

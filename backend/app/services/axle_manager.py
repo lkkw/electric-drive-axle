@@ -189,22 +189,20 @@ class AxleManager:
 
     async def disconnect(self) -> None:
         """安全断开 CAN 通信并释放硬件资源。"""
+        # 1. 在锁内设置停止标志、收集任务引用，然后立即释放锁
         async with self._lock:
-            await self._disconnect_internal()
+            self._is_transmitting = False
+            self._connected = False
+            self._mcu_1_last_rx_timestamp = None
+            self._mcu_2_last_rx_timestamp = None
+            self._mcu_tbox_last_rx_timestamp = None
+            tasks_to_cancel = [t for t in (self._tx_task, self._rx_task) if t is not None]
+            self._tx_task = None
+            self._rx_task = None
 
-    async def _disconnect_internal(self) -> None:
-        """内部断开流程 (需在锁保护下调用)。"""
-        self._is_transmitting = False
-        self._connected = False
-        self._mcu_1_last_rx_timestamp = None
-        self._mcu_2_last_rx_timestamp = None
-        self._mcu_tbox_last_rx_timestamp = None
-
-        # 1. 停止发送和接收后台任务
-        tasks_to_cancel = [t for t in (self._tx_task, self._rx_task) if t is not None]
+        # 2. 在锁外取消并等待任务退出——任务不再因争抢锁而无法响应取消信号
         for task in tasks_to_cancel:
             task.cancel()
-
         for task in tasks_to_cancel:
             try:
                 await task
@@ -213,10 +211,13 @@ class AxleManager:
             except Exception as err:
                 logger.warning("停止任务时发生异常: %s", err)
 
-        self._tx_task = None
-        self._rx_task = None
+        # 3. 重新获取锁，完成硬件清理
+        async with self._lock:
+            await self._cleanup_hardware()
 
-        # 2. 发送使能关闭报文 (停机保护)
+    async def _cleanup_hardware(self) -> None:
+        """发送停机保护帧并释放硬件资源 (需在锁保护下调用)。"""
+        # 1. 发送使能关闭报文 (停机保护)
         try:
             shutdown_payload = encode_vcu_11(
                 torque_req=0.0,
@@ -241,7 +242,7 @@ class AxleManager:
         except Exception as err:
             logger.warning("生成停机保护帧异常: %s", err)
 
-        # 3. 关闭通道并释放设备
+        # 2. 关闭通道并释放设备
         channels_to_close = [0, 1] if self._channel == -1 else [self._channel]
         for ch in channels_to_close:
             try:
@@ -254,6 +255,25 @@ class AxleManager:
             logger.error("关闭设备时发生异常: %s", err)
 
         logger.info("USBCAN 设备已完全关闭并释放。")
+
+    async def _disconnect_internal(self) -> None:
+        """内部断开流程 (需在锁保护下调用，仅用于 connect 中的重连场景)。"""
+        self._is_transmitting = False
+        self._connected = False
+        self._mcu_1_last_rx_timestamp = None
+        self._mcu_2_last_rx_timestamp = None
+        self._mcu_tbox_last_rx_timestamp = None
+
+        # connect 中调用时，旧任务仍在运行；此处直接取消。
+        # 因为此处已持锁，而任务也需要锁，所以只做 cancel 不 await，
+        # 依靠 _is_transmitting=False 让任务在下一个无锁 await 点自然退出。
+        for task in (self._tx_task, self._rx_task):
+            if task is not None:
+                task.cancel()
+        self._tx_task = None
+        self._rx_task = None
+
+        await self._cleanup_hardware()
 
     async def update_command(self, update: VcuCommandUpdateRequest) -> VcuCommandState:
         """更新 VCU 控制设定值。

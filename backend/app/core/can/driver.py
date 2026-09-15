@@ -392,7 +392,7 @@ class ZlgCanDriver:
                     self._executor,
                     self._dll.ZCAN_Receive,
                     chn_handle,
-                    byref(rx_buffer),
+                    ctypes.cast(rx_buffer, P_ZCAN_Receive_Data),
                     max_count,
                     wait_time_ms,
                 ),
