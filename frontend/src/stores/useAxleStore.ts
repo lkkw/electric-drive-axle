@@ -25,7 +25,7 @@ const createInitialTelemetry = (): AxleTelemetry => ({
   device_type: 4,
   device_index: 0,
   channel: 0,
-  baud_rate: 250000,
+  baud_rate: 500000,
   command: {
     torque_req: 0,
     speed_req: 0,
@@ -102,17 +102,29 @@ export const useAxleStore = defineStore('axle', () => {
   const historySeries = ref<HistoryPoint[]>([])
 
   let eventSource: EventSource | null = null
+  let shouldIncludeCanFrames = false
+  let eventSourceIncludesCanFrames = false
 
   const isConnected = computed(() => telemetry.value.connected)
   const isTransmitting = computed(() => telemetry.value.is_transmitting)
 
   /** 开启 SSE 遥测实时流 */
-  function startSse() {
-    if (eventSource) {
+  function startSse(includeCanFrames?: boolean) {
+    if (includeCanFrames !== undefined) {
+      shouldIncludeCanFrames = includeCanFrames
+    }
+
+    if (eventSource && eventSourceIncludesCanFrames === shouldIncludeCanFrames) {
       return
     }
 
-    const url = getAxleStreamUrl()
+    if (eventSource) {
+      eventSource.close()
+      eventSource = null
+    }
+
+    eventSourceIncludesCanFrames = shouldIncludeCanFrames
+    const url = getAxleStreamUrl(shouldIncludeCanFrames)
     eventSource = new EventSource(url)
 
     eventSource.onopen = () => {

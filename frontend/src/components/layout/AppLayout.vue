@@ -8,13 +8,29 @@ import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar'
 import { useAxleStore } from '@/stores/useAxleStore'
 
 const axleStore = useAxleStore()
+let cancelControlViewPreload: (() => void) | undefined
 
 onMounted(() => {
   axleStore.startSse()
   void axleStore.refreshStatus()
+
+  if (window.location.pathname !== '/axle') {
+    const preloadControlView = () => {
+      void import('@/views/AxleControlView.vue')
+    }
+
+    if ('requestIdleCallback' in window) {
+      const preloadId = window.requestIdleCallback(preloadControlView, { timeout: 1500 })
+      cancelControlViewPreload = () => window.cancelIdleCallback(preloadId)
+    } else {
+      const preloadId = setTimeout(preloadControlView, 300)
+      cancelControlViewPreload = () => clearTimeout(preloadId)
+    }
+  }
 })
 
 onBeforeUnmount(() => {
+  cancelControlViewPreload?.()
   axleStore.stopSse()
 })
 </script>

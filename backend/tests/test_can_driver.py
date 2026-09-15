@@ -14,11 +14,11 @@ from app.core.can.zlgcan_types import (
 
 def test_baudrate_timings_mapping() -> None:
     """验证 SJA1000 经典波特率预分频寄存器映射表完备性。"""
-    # 电驱桥默认通信波特率 250kbps: (0x01, 0x1C)
+    # 250kbps: (0x01, 0x1C)
     assert 250000 in BAUDRATE_TIMINGS
     assert BAUDRATE_TIMINGS[250000] == (0x01, 0x1C)
 
-    # 500kbps: (0x00, 0x1C)
+    # 电驱桥默认通信波特率 500kbps: (0x00, 0x1C)
     assert 500000 in BAUDRATE_TIMINGS
     assert BAUDRATE_TIMINGS[500000] == (0x00, 0x1C)
 
@@ -83,6 +83,35 @@ def test_open_channel_sja1000_timing_configured() -> None:
     asyncio.run(run_test())
 
 
+def test_open_channel_default_baud_rate_500k() -> None:
+    """测试不传 baud_rate 时 open_channel 默认使用 500k (timing0=0x00, timing1=0x1C)。"""
+
+    async def run_test() -> None:
+        driver = ZlgCanDriver()
+        driver._device_handle = 12345
+
+        mock_dll = MagicMock()
+        mock_dll.ZCAN_SetValue.return_value = 0
+        mock_dll.ZCAN_InitCAN.return_value = 88888
+        mock_dll.ZCAN_StartCAN.return_value = ZCAN_STATUS_OK
+        driver._dll = mock_dll
+
+        # 不传 baud_rate，验证默认波特率参数生效
+        await driver.open_channel(channel=0)
+
+        assert driver.is_channel_open(0)
+        mock_dll.ZCAN_InitCAN.assert_called_once()
+        args = mock_dll.ZCAN_InitCAN.call_args[0]
+        cfg_pointer = args[2]
+        cfg = cfg_pointer._obj
+        assert cfg.config.can.timing0 == 0x00
+        assert cfg.config.can.timing1 == 0x1C
+
+        driver.shutdown_executor()
+
+    asyncio.run(run_test())
+
+
 def test_transmit_serialization_lock() -> None:
     """测试 transmit 受内部锁保护，保证多协程发送的串行化。"""
 
@@ -118,6 +147,37 @@ def test_transmit_serialization_lock() -> None:
         # 验证并发深度始终为 1 (完全被 tx_lock 串行化)
         assert max_concurrent == 1
 
+        driver.shutdown_executor()
+
+    asyncio.run(run_test())
+
+
+def test_transmit_sets_remote_frame_flag() -> None:
+    """原始报文接口传入远程帧标志时，驱动结构体必须设置 RTR 位。"""
+
+    async def run_test() -> None:
+        driver = ZlgCanDriver()
+        driver._device_handle = 12345
+        driver._channel_handles[0] = 88888
+        captured_rtr: list[int] = []
+
+        def fake_transmit(chn: int, obj_ptr: object, count: int) -> int:
+            captured_rtr.append(obj_ptr._obj.frame.rtr)
+            return 1
+
+        mock_dll = MagicMock()
+        mock_dll.ZCAN_Transmit.side_effect = fake_transmit
+        driver._dll = mock_dll
+
+        sent = await driver.transmit(
+            can_id=0x314,
+            data=bytes(8),
+            channel=0,
+            is_remote=True,
+        )
+
+        assert sent is True
+        assert captured_rtr == [1]
         driver.shutdown_executor()
 
     asyncio.run(run_test())

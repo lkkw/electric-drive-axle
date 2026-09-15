@@ -84,6 +84,7 @@ export interface AxleSafetyStatus {
 }
 
 export interface CanFrameItem {
+  sequence: number
   timestamp: string
   direction: 'TX' | 'RX'
   can_id: number

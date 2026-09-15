@@ -1,7 +1,5 @@
 import { LineChart } from 'echarts/charts'
 import {
-  DataZoomInsideComponent,
-  DataZoomSliderComponent,
   GridComponent,
   LegendComponent,
   TooltipComponent,
@@ -17,6 +15,4 @@ use([
   GridComponent,
   TooltipComponent,
   LegendComponent,
-  DataZoomInsideComponent,
-  DataZoomSliderComponent,
 ])

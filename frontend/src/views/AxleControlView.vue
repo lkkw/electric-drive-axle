@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
 import {
   AlertTriangleIcon,
   CheckCircle2Icon,
@@ -16,13 +15,6 @@ import VcuCommandCard from '@/components/axle/VcuCommandCard.vue'
 import { useAxleStore } from '@/stores/useAxleStore'
 
 const axleStore = useAxleStore()
-
-onMounted(async () => {
-  await axleStore.refreshStatus()
-  axleStore.startSse()
-})
-
-
 </script>
 
 <template>

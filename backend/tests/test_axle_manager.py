@@ -139,17 +139,69 @@ def test_axle_manager_sse_subscription() -> None:
     async def run_test() -> None:
         driver = create_mock_driver()
         manager = AxleManager(driver=driver)
+        manager._record_frame(
+            direction="RX",
+            can_id=0x35A,
+            data=bytes(8),
+            name="MCU_1",
+        )
         queue = manager.subscribe()
+        frame_queue = manager.subscribe(include_frames=True)
 
         assert queue in manager._subscribers
         manager._broadcast_telemetry()
 
-        # 验证收到遥测快照
+        # 常规页面不搬运原始报文；仅 CAN 监视页订阅最近报文。
         telemetry = await asyncio.wait_for(queue.get(), timeout=1.0)
+        frame_telemetry = await asyncio.wait_for(frame_queue.get(), timeout=1.0)
         assert telemetry.command.gear_sts == VcuGearStatus.N
+        assert telemetry.recent_frames == []
+        assert len(frame_telemetry.recent_frames) == 1
+        assert frame_telemetry.recent_frames[0].sequence == 1
 
         manager.unsubscribe(queue)
+        manager.unsubscribe(frame_queue)
         assert queue not in manager._subscribers
+        assert frame_queue not in manager._subscribers
+
+    asyncio.run(run_test())
+
+
+def test_vcu_life_remains_continuous_through_disconnect_frames() -> None:
+    """周期帧与停止前保护帧必须保持 0x314 Life 逐帧连续。"""
+
+    async def run_test() -> None:
+        driver = create_mock_driver()
+        payloads: list[bytes] = []
+        periodic_frames_sent = asyncio.Event()
+
+        async def capture_transmit(**kwargs: object) -> bool:
+            payloads.append(bytes(kwargs["data"]))
+            if len(payloads) >= 3:
+                periodic_frames_sent.set()
+            return True
+
+        driver.transmit.side_effect = capture_transmit
+        manager = AxleManager(driver=driver)
+        await manager.connect(CanConnectRequest(device_type=4, channel=0, baud_rate=500000))
+
+        await asyncio.wait_for(periodic_frames_sent.wait(), timeout=0.2)
+
+        await manager.disconnect()
+
+        assert len(payloads) >= 5
+        life_values = [(payload[7] >> 4) & 0x0F for payload in payloads]
+        assert all(
+            current == (previous + 1) % 16
+            for previous, current in zip(life_values, life_values[1:], strict=False)
+        )
+
+        # 停止前最后两帧均为关闭模式、关闭使能、零控制量和 N 挡。
+        for payload in payloads[-2:]:
+            assert payload[0:2] == bytes([0x75, 0x30])
+            assert payload[2:4] == bytes([0x2E, 0xE0])
+            assert payload[6] == 0x00
+            assert payload[7] & 0x0F == 0x03
 
     asyncio.run(run_test())
 
@@ -413,3 +465,13 @@ def test_axle_manager_shutdown() -> None:
         driver.shutdown_executor.assert_called_once()
 
     asyncio.run(run_test())
+
+
+def test_default_baud_rate_configuration() -> None:
+    """验证连接配置模型与系统遥测默认波特率均为 500000 (500 kbps)。"""
+    default_request = CanConnectRequest()
+    assert default_request.baud_rate == 500000
+
+    manager = AxleManager(driver=create_mock_driver())
+    telemetry = manager.get_telemetry()
+    assert telemetry.baud_rate == 500000

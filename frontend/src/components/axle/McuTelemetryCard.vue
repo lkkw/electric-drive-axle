@@ -213,9 +213,14 @@ const mechPowerKw = computed(() => {
           <div class="text-xs text-muted-foreground font-semibold">
             <span>母线电压</span>
           </div>
-          <div class="text-2xl font-mono font-bold text-primary">
-            {{ mcu1.mcu_dc_main_wire_volt }}
-            <span class="text-xs font-normal text-muted-foreground font-sans"
+          <div
+            class="grid grid-cols-[6ch_auto] items-baseline justify-start whitespace-nowrap font-mono text-2xl font-bold text-primary"
+          >
+            <span class="text-right tabular-nums">{{
+              mcu1.mcu_dc_main_wire_volt
+            }}</span>
+            <span
+              class="ml-1.5 shrink-0 font-sans text-xs font-normal text-muted-foreground"
               >V</span
             >
           </div>

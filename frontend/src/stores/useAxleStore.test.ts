@@ -12,6 +12,7 @@ describe('useAxleStore', () => {
     const store = useAxleStore()
     expect(store.isConnected).toBe(false)
     expect(store.isTransmitting).toBe(false)
+    expect(store.telemetry.baud_rate).toBe(500000)
     expect(store.telemetry.command.torque_req).toBe(0)
     expect(store.telemetry.command.speed_req).toBe(0)
     expect(store.telemetry.command.gear_sts).toBe(3) // N
@@ -41,6 +42,7 @@ describe('useAxleStore', () => {
     expect(store.telemetry.recent_frames.length).toBe(0)
 
     store.telemetry.recent_frames.push({
+      sequence: 1,
       timestamp: '12:30:00.123',
       direction: 'TX',
       can_id: 0x314,

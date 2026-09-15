@@ -44,6 +44,9 @@ logger = logging.getLogger("app.axle_manager")
 # 自动停机只接受近期成功解码的反馈，避免使用断线前残留的遥测值。
 MCU_2_SAFETY_FRESHNESS_SECONDS = 0.5
 MCU_TBOX_SAFETY_FRESHNESS_SECONDS = 1.0
+SHUTDOWN_FRAME_COUNT = 2
+SHUTDOWN_FRAME_TIMEOUT_SECONDS = 0.2
+STREAM_FRAME_LIMIT = 200
 
 
 class AxleManager:
@@ -53,12 +56,13 @@ class AxleManager:
         """初始化管理器。"""
         self._driver = driver or ZlgCanDriver()
         self._lock = asyncio.Lock()
+        self._lifecycle_lock = asyncio.Lock()
 
         # 通信配置
         self._device_type: int = ZcanDeviceType.USBCAN2
         self._device_index: int = 0
         self._channel: int = 0
-        self._baud_rate: int = 250000
+        self._baud_rate: int = 500000
 
         # 控制指令状态 (VCU_11 发送内容)
         self._command = VcuCommandState()
@@ -80,8 +84,9 @@ class AxleManager:
         self._mcu_2_last_rx_timestamp: float | None = None
         self._mcu_tbox_last_rx_timestamp: float | None = None
         self._recent_frames: deque[CanFrameItem] = deque(maxlen=500)
+        self._frame_sequence: int = 0
 
-        # 上位机自动停机策略。阈值在内存中维护，默认关闭，避免未确认配置直接介入控制。
+        # 上位机自动停机策略。阈值在内存中维护，进程启动后默认开启。
         self._safety_config = AxleSafetyConfig()
         self._safety_last_trip: AxleSafetyTrip | None = None
         self._safety_trip_id = 0
@@ -89,9 +94,12 @@ class AxleManager:
         # 异步循环任务句柄
         self._tx_task: asyncio.Task[None] | None = None
         self._rx_task: asyncio.Task[None] | None = None
+        self._disconnecting: bool = False
+        self._shutdown_frames_remaining: int = 0
+        self._shutdown_frames_sent = asyncio.Event()
 
         # SSE 事件分发队列集合
-        self._subscribers: set[asyncio.Queue[AxleTelemetry]] = set()
+        self._subscribers: dict[asyncio.Queue[AxleTelemetry], bool] = {}
 
     @property
     def is_connected(self) -> bool:
@@ -104,6 +112,11 @@ class AxleManager:
         return self._is_transmitting
 
     async def connect(self, config: CanConnectRequest) -> None:
+        """串行执行设备连接，避免与停止/重连流程交叉操作硬件句柄。"""
+        async with self._lifecycle_lock:
+            await self._connect(config)
+
+    async def _connect(self, config: CanConnectRequest) -> None:
         """连接周立功 USBCAN 设备并开启通道与收发任务。
 
         :param config: 设备与通道配置参数
@@ -188,11 +201,48 @@ class AxleManager:
             logger.info("USBCAN 启动成功，10ms 控制循环与接收循环已就绪。")
 
     async def disconnect(self) -> None:
+        """串行执行设备停止与资源释放。"""
+        async with self._lifecycle_lock:
+            await self._disconnect()
+
+    async def _disconnect(self) -> None:
         """安全断开 CAN 通信并释放硬件资源。"""
-        # 1. 在锁内设置停止标志、收集任务引用，然后立即释放锁
+        disconnect_started = time.perf_counter()
+
+        # 先把控制量切换到安全值，让既有 10 ms 循环连续发送两帧。
+        # 这样既保留 VCU_Life 连续性，也避免停掉循环后再额外等待一次底层发送调用。
+        async with self._lock:
+            should_drain_shutdown_frames = self._connected and self._tx_task is not None
+            self._disconnecting = should_drain_shutdown_frames
+            self._command.torque_req = 0.0
+            self._command.speed_req = 0
+            self._command.work_mode_req = 0
+            self._command.mcu_en_cmd = 0
+            self._command.gear_sts = 3
+            self._command.active_discharge = 0
+            self._shutdown_frames_remaining = (
+                SHUTDOWN_FRAME_COUNT if should_drain_shutdown_frames else 0
+            )
+            self._shutdown_frames_sent.clear()
+
+        if should_drain_shutdown_frames:
+            try:
+                await asyncio.wait_for(
+                    self._shutdown_frames_sent.wait(),
+                    timeout=SHUTDOWN_FRAME_TIMEOUT_SECONDS,
+                )
+            except TimeoutError:
+                logger.warning(
+                    "停机保护帧未在 %.0f ms 内完成发送，继续释放设备。",
+                    SHUTDOWN_FRAME_TIMEOUT_SECONDS * 1000,
+                )
+
+        # 停止后台任务，并使实时反馈立即失效。
         async with self._lock:
             self._is_transmitting = False
             self._connected = False
+            self._disconnecting = False
+            self._shutdown_frames_remaining = 0
             self._mcu_1_last_rx_timestamp = None
             self._mcu_2_last_rx_timestamp = None
             self._mcu_tbox_last_rx_timestamp = None
@@ -200,9 +250,10 @@ class AxleManager:
             self._tx_task = None
             self._rx_task = None
 
-        # 2. 在锁外取消并等待任务退出——任务不再因争抢锁而无法响应取消信号
+        # 在锁外取消并等待任务退出，避免任务因争抢状态锁而延迟退出。
         for task in tasks_to_cancel:
-            task.cancel()
+            if not task.done():
+                task.cancel()
         for task in tasks_to_cancel:
             try:
                 await task
@@ -211,48 +262,73 @@ class AxleManager:
             except Exception as err:
                 logger.warning("停止任务时发生异常: %s", err)
 
-        # 3. 重新获取锁，完成硬件清理
+        # 周期循环已经发出连续 Life 的停机帧，清理阶段不再重复发送。
         async with self._lock:
-            await self._cleanup_hardware()
+            await self._cleanup_hardware(send_shutdown_frame=False)
 
-    async def _cleanup_hardware(self) -> None:
+        logger.info(
+            "USBCAN 停止通信并释放设备完成，耗时 %.1f ms。",
+            (time.perf_counter() - disconnect_started) * 1000,
+        )
+
+    async def _cleanup_hardware(self, *, send_shutdown_frame: bool = True) -> None:
         """发送停机保护帧并释放硬件资源 (需在锁保护下调用)。"""
-        # 1. 发送使能关闭报文 (停机保护)
-        try:
-            shutdown_payload = encode_vcu_11(
-                torque_req=0.0,
-                speed_req=0,
-                work_mode_req=0,
-                mcu_en_cmd=0,
-                gear_sts=3,  # 空挡
-                active_discharge=0,
-                life=0,
-            )
-            channels_to_close = [0, 1] if self._channel == -1 else [self._channel]
-            for ch in channels_to_close:
-                if self._driver.is_channel_open(ch):
-                    try:
-                        await self._driver.transmit(
-                            can_id=CAN_ID_VCU_11,
-                            data=shutdown_payload,
-                            channel=ch,
-                        )
-                    except Exception as err:
-                        logger.warning("下发停机保护帧异常 (通道 %d): %s", ch, err)
-        except Exception as err:
-            logger.warning("生成停机保护帧异常: %s", err)
-
-        # 2. 关闭通道并释放设备
         channels_to_close = [0, 1] if self._channel == -1 else [self._channel]
+
+        # 重连和进程退出等内部清理路径无法等待周期循环，使用下一连续 Life 补发一帧。
+        if send_shutdown_frame:
+            try:
+                self._command.life = (self._command.life + 1) % 16
+                shutdown_payload = encode_vcu_11(
+                    torque_req=0.0,
+                    speed_req=0,
+                    work_mode_req=0,
+                    mcu_en_cmd=0,
+                    gear_sts=3,
+                    active_discharge=0,
+                    life=self._command.life,
+                )
+                for ch in channels_to_close:
+                    if self._driver.is_channel_open(ch):
+                        try:
+                            sent = await self._driver.transmit(
+                                can_id=CAN_ID_VCU_11,
+                                data=shutdown_payload,
+                                channel=ch,
+                            )
+                            if sent:
+                                self._tx_frame_count += 1
+                            else:
+                                self._tx_error_count += 1
+                        except Exception as err:
+                            self._tx_error_count += 1
+                            logger.warning("下发停机保护帧异常 (通道 %d): %s", ch, err)
+            except Exception as err:
+                logger.warning("生成停机保护帧异常: %s", err)
+
+        # 关闭通道并释放设备。
         for ch in channels_to_close:
+            close_channel_started = time.perf_counter()
             try:
                 await self._driver.close_channel(ch)
             except Exception as err:
                 logger.error("关闭通道 %d 时发生异常: %s", ch, err)
+            finally:
+                logger.info(
+                    "关闭 CAN 通道 %d 耗时 %.1f ms。",
+                    ch,
+                    (time.perf_counter() - close_channel_started) * 1000,
+                )
+        close_device_started = time.perf_counter()
         try:
             await self._driver.close_device()
         except Exception as err:
             logger.error("关闭设备时发生异常: %s", err)
+        finally:
+            logger.info(
+                "关闭 USBCAN 设备句柄耗时 %.1f ms。",
+                (time.perf_counter() - close_device_started) * 1000,
+            )
 
         logger.info("USBCAN 设备已完全关闭并释放。")
 
@@ -282,6 +358,9 @@ class AxleManager:
         :return: 更新后的完整控制状态
         """
         async with self._lock:
+            if self._disconnecting:
+                raise CanDriverError("设备正在停止通信，暂不接受新的控制指令。")
+
             # 急停互锁保护：急停状态下禁止使能或写入非零控制量
             if self._is_emergency_locked:
                 if (
@@ -424,8 +503,7 @@ class AxleManager:
 
         if (
             self._mcu_tbox_last_rx_timestamp is not None
-            and now - self._mcu_tbox_last_rx_timestamp
-            <= MCU_TBOX_SAFETY_FRESHNESS_SECONDS
+            and now - self._mcu_tbox_last_rx_timestamp <= MCU_TBOX_SAFETY_FRESHNESS_SECONDS
         ):
             actual_temperature = float(self._mcu_tbox.mcu_motor_temp)
             if actual_temperature > config.max_motor_temp_c:
@@ -458,8 +536,7 @@ class AxleManager:
             threshold=threshold,
             unit=unit,
             message=(
-                f"{metric_label} {actual_value:g} {unit} 超过自动停机阈值 "
-                f"{threshold:g} {unit}。"
+                f"{metric_label} {actual_value:g} {unit} 超过自动停机阈值 {threshold:g} {unit}。"
             ),
             triggered_at=datetime.now(UTC).isoformat(),
         )
@@ -469,7 +546,6 @@ class AxleManager:
         await self.emergency_stop()
         self._broadcast_telemetry()
         return True
-
 
     def _record_frame(
         self,
@@ -483,8 +559,10 @@ class AxleManager:
         now = datetime.now()
         timestamp = f"{now.strftime('%H:%M:%S')}.{now.microsecond // 1000:03d}"
         data_hex = " ".join(f"{b:02X}" for b in data)
+        self._frame_sequence += 1
         self._recent_frames.append(
             CanFrameItem(
+                sequence=self._frame_sequence,
                 timestamp=timestamp,
                 direction=direction,
                 can_id=can_id,
@@ -552,9 +630,20 @@ class AxleManager:
         """清空最近报文监控缓冲区。"""
         self._recent_frames.clear()
 
-    def get_telemetry(self) -> AxleTelemetry:
+    def get_telemetry(
+        self,
+        *,
+        include_frames: bool = True,
+        frame_limit: int | None = None,
+    ) -> AxleTelemetry:
         """获取当前电驱桥系统最新遥测快照。"""
         now_str = datetime.now(UTC).isoformat()
+        recent_frames: list[CanFrameItem] = []
+        if include_frames:
+            recent_frames = list(self._recent_frames)
+            if frame_limit is not None:
+                recent_frames = recent_frames[-frame_limit:]
+
         return AxleTelemetry(
             connected=self._connected,
             is_transmitting=self._is_transmitting,
@@ -582,30 +671,38 @@ class AxleManager:
             rx_frame_count=self._rx_frame_count,
             tx_error_count=self._tx_error_count,
             last_rx_timestamp=self._last_rx_timestamp,
-            recent_frames=list(self._recent_frames),
+            recent_frames=recent_frames,
             updated_at=now_str,
         )
 
-    def subscribe(self) -> asyncio.Queue[AxleTelemetry]:
+    def subscribe(self, *, include_frames: bool = False) -> asyncio.Queue[AxleTelemetry]:
         """注册 SSE 遥测流订阅队列。"""
         queue: asyncio.Queue[AxleTelemetry] = asyncio.Queue(maxsize=30)
-        self._subscribers.add(queue)
+        self._subscribers[queue] = include_frames
         return queue
 
     def unsubscribe(self, queue: asyncio.Queue[AxleTelemetry]) -> None:
         """注销 SSE 遥测流订阅队列。"""
-        self._subscribers.discard(queue)
+        self._subscribers.pop(queue, None)
 
     def _broadcast_telemetry(self) -> None:
         """向所有已连接的 SSE 客户端广播最新数据快照。"""
         if not self._subscribers:
             return
 
-        snapshot = self.get_telemetry()
+        snapshots: dict[bool, AxleTelemetry] = {}
         dead_queues: list[asyncio.Queue[AxleTelemetry]] = []
 
-        for q in self._subscribers:
+        for q, include_frames in tuple(self._subscribers.items()):
             try:
+                snapshot = snapshots.get(include_frames)
+                if snapshot is None:
+                    snapshot = self.get_telemetry(
+                        include_frames=include_frames,
+                        frame_limit=STREAM_FRAME_LIMIT if include_frames else None,
+                    )
+                    snapshots[include_frames] = snapshot
+
                 # 若队列已满，弹出最旧项以保证前端展示最新数据
                 if q.full():
                     try:
@@ -617,13 +714,14 @@ class AxleManager:
                 dead_queues.append(q)
 
         for q in dead_queues:
-            self._subscribers.discard(q)
+            self._subscribers.pop(q, None)
 
     async def shutdown(self) -> None:
         """系统退出时释放所有硬件连接并关闭驱动线程池。"""
-        async with self._lock:
-            if self._connected:
-                await self._disconnect_internal()
+        async with self._lifecycle_lock:
+            async with self._lock:
+                if self._connected:
+                    await self._disconnect_internal()
         self._driver.shutdown_executor()
 
     async def _tx_loop(self) -> None:
@@ -648,6 +746,15 @@ class AxleManager:
                         gear = self._command.gear_sts
                         dischg = self._command.active_discharge
                         life = self._command.life
+                        is_shutdown_payload = (
+                            self._disconnecting
+                            and tq == 0.0
+                            and spd == 0
+                            and mode == 0
+                            and en == 0
+                            and gear == 3
+                            and dischg == 0
+                        )
 
                     # 2. 纯 Python 位运算编码
                     payload = encode_vcu_11(
@@ -687,6 +794,13 @@ class AxleManager:
                             name="VCU_11 (控制器指令)",
                         )
 
+                        if is_shutdown_payload:
+                            async with self._lock:
+                                if self._disconnecting and self._shutdown_frames_remaining > 0:
+                                    self._shutdown_frames_remaining -= 1
+                                    if self._shutdown_frames_remaining == 0:
+                                        self._shutdown_frames_sent.set()
+
                     # 4. 绝对时间戳推移补偿（防止相位漂移累积）
                     next_tick += target_interval
                     sleep_duration = next_tick - time.perf_counter()
@@ -722,7 +836,7 @@ class AxleManager:
                             frames.extend(ch_frames)
                     except Exception as err:
                         logger.warning("CAN 硬件接收驱动异常 (通道 %d): %s", ch, err)
-                        
+
                 if not frames:
                     await asyncio.sleep(0.005)
                     continue

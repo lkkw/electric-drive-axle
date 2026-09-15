@@ -16,7 +16,7 @@ class CanConnectRequest(BaseModel):
     )
     device_index: int = Field(default=0, ge=0, description="设备卡索引")
     channel: int = Field(default=0, ge=-1, le=1, description="CAN 通道号")
-    baud_rate: int = Field(default=250000, description="通信波特率 (bps)")
+    baud_rate: int = Field(default=500000, description="通信波特率 (bps)")
 
 
 class VcuCommandUpdateRequest(BaseModel):
@@ -164,6 +164,7 @@ class AxleSafetyStatus(BaseModel):
 class CanFrameItem(BaseModel):
     """单条 CAN 报文记录（用于原始报文监视与总线诊断）。"""
 
+    sequence: int = Field(ge=1, description="进程内单调递增的报文序号")
     timestamp: str = Field(description="时间戳 (HH:MM:SS.mmm)")
     direction: str = Field(description="传输方向 (TX 发送 / RX 接收)")
     can_id: int = Field(description="CAN ID 整数值")
@@ -196,7 +197,7 @@ class AxleTelemetry(BaseModel):
     device_type: int = 4
     device_index: int = 0
     channel: int = 0
-    baud_rate: int = 250000
+    baud_rate: int = 500000
     command: VcuCommandState = Field(default_factory=VcuCommandState)
     mcu_1: McuDriveMotor1Telemetry = Field(default_factory=McuDriveMotor1Telemetry)
     # 仅在成功解码 0x35A 后更新，用于判断 MCU 故障反馈是否新鲜。

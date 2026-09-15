@@ -18,6 +18,7 @@ from app.schemas.axle import (
     VcuCommandState,
     VcuCommandUpdateRequest,
 )
+from app.services.axle_manager import STREAM_FRAME_LIMIT
 
 logger = logging.getLogger("app.routers.axle")
 
@@ -213,15 +214,20 @@ async def get_axle_status(
 async def _telemetry_event_stream(
     request: Request,
     manager: AxleManagerDep,
+    *,
+    include_frames: bool,
 ) -> AsyncGenerator[str, None]:
     """SSE 遥测事件生成器。
 
     订阅 AxleManager 的广播队列，以低延迟将电驱桥遥测数据推送至前端。
     """
-    queue = manager.subscribe()
+    queue = manager.subscribe(include_frames=include_frames)
 
     # 首次连接立即推送当前最新快照
-    initial_snapshot = manager.get_telemetry()
+    initial_snapshot = manager.get_telemetry(
+        include_frames=include_frames,
+        frame_limit=STREAM_FRAME_LIMIT if include_frames else None,
+    )
     initial_json = initial_snapshot.model_dump_json()
     yield f"event: telemetry\ndata: {initial_json}\n\n"
 
@@ -252,10 +258,15 @@ async def _telemetry_event_stream(
 async def stream_telemetry(
     request: Request,
     manager: AxleManagerDep,
+    include_frames: bool = False,
 ) -> StreamingResponse:
     """建立 Server-Sent Events (SSE) 长连接，持续推送电驱桥各控制器遥测数据。"""
     return StreamingResponse(
-        _telemetry_event_stream(request, manager),
+        _telemetry_event_stream(
+            request,
+            manager,
+            include_frames=include_frames,
+        ),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

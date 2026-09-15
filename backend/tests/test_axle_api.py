@@ -17,6 +17,7 @@ def test_get_axle_status_initial() -> None:
     assert "mcu_1" in data
     assert "mcu_2" in data
     assert "mcu_tbox" in data
+    assert data["baud_rate"] == 500000
     assert data["command"]["gear_sts"] == 3  # 空挡 N
 
 

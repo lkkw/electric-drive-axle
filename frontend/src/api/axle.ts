@@ -46,4 +46,5 @@ export const getAxleStatus = () =>
   alova.Get<AxleTelemetry>('/axle/status', { cacheFor: 0 })
 
 /** 获取 SSE 实时数据流 URL */
-export const getAxleStreamUrl = () => `${API_BASE_URL}/axle/stream`
+export const getAxleStreamUrl = (includeFrames = false) =>
+  `${API_BASE_URL}/axle/stream?include_frames=${includeFrames}`

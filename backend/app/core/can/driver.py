@@ -6,6 +6,7 @@ blocking the FastAPI async event loop.
 """
 
 import asyncio
+import ctypes
 import os
 import platform
 import sys
@@ -22,7 +23,6 @@ from ctypes import (
 from dataclasses import dataclass
 from pathlib import Path
 
-import ctypes
 from app.core.can.constants import BAUDRATE_TIMINGS, ZcanDeviceType
 from app.core.can.zlgcan_types import (
     INVALID_CHANNEL_HANDLE,
@@ -114,7 +114,7 @@ class ZlgCanDriver:
         self._device_handle: int = INVALID_DEVICE_HANDLE
         self._channel_handles: dict[int, int] = {}
         self._tx_lock = asyncio.Lock()  # 串行化硬件报文发送，防止并发调用损坏 C 驱动缓冲区
-        self._rx_buffer_cache: dict[tuple[int, int], 'ctypes.Array[ZCAN_Receive_Data]'] = {}
+        self._rx_buffer_cache: dict[tuple[int, int], ctypes.Array[ZCAN_Receive_Data]] = {}
         self._dll_path = self._resolve_dll_path(dll_path)
         self._dll = self._load_dll(self._dll_path)
 
@@ -221,10 +221,10 @@ class ZlgCanDriver:
                 ),
                 timeout=_C_CALL_TIMEOUT,
             )
-        except TimeoutError:
+        except TimeoutError as err:
             raise CanDriverError(
                 f"打开设备超时（{_C_CALL_TIMEOUT}s），请检查 USB 连接状态。"
-            )
+            ) from err
 
         if not handle or handle == INVALID_DEVICE_HANDLE:
             raise CanDriverError(f"打开 ZLG 设备失败 (type={device_type}, index={device_index})")
@@ -234,7 +234,7 @@ class ZlgCanDriver:
     async def open_channel(
         self,
         channel: int = 0,
-        baud_rate: int = 250000,
+        baud_rate: int = 500000,
     ) -> None:
         """异步配置波特率并启动 CAN 通道。
 
@@ -293,10 +293,10 @@ class ZlgCanDriver:
                 ),
                 timeout=_C_CALL_TIMEOUT,
             )
-        except TimeoutError:
+        except TimeoutError as err:
             raise CanDriverError(
                 f"初始化通道 {channel} 超时（{_C_CALL_TIMEOUT}s），请检查硬件状态。"
-            )
+            ) from err
 
         if not chn_handle or chn_handle == INVALID_CHANNEL_HANDLE:
             raise CanChannelNotOpenError(f"初始化通道 {channel} 失败 (InitCAN)。")
@@ -319,6 +319,7 @@ class ZlgCanDriver:
         data: bytes,
         channel: int = 0,
         is_extended: bool = False,
+        is_remote: bool = False,
     ) -> bool:
         """异步单帧发送 CAN 报文 (受 _tx_lock 保护，防止多协程并发写入破坏 C 驱动缓冲区)。
 
@@ -326,6 +327,7 @@ class ZlgCanDriver:
         :param data: 报文数据 (最多 8 字节)
         :param channel: 目标通道号
         :param is_extended: 是否扩展帧
+        :param is_remote: 是否远程帧
         :return: 发送是否成功
         """
         async with self._tx_lock:
@@ -339,7 +341,7 @@ class ZlgCanDriver:
             tx_obj.frame.can_id = can_id & 0x1FFFFFFF
             tx_obj.frame.can_dlc = data_len
             tx_obj.frame.eff = 1 if is_extended else 0
-            tx_obj.frame.rtr = 0
+            tx_obj.frame.rtr = 1 if is_remote else 0
 
             for i in range(data_len):
                 tx_obj.frame.data[i] = data[i]
@@ -356,10 +358,10 @@ class ZlgCanDriver:
                     ),
                     timeout=_C_CALL_TIMEOUT,
                 )
-            except TimeoutError:
+            except TimeoutError as err:
                 raise CanDriverError(
                     f"CAN 报文发送超时（{_C_CALL_TIMEOUT}s），硬件可能已断开。"
-                )
+                ) from err
             return ret == 1
 
     async def receive(
@@ -398,10 +400,10 @@ class ZlgCanDriver:
                 ),
                 timeout=_C_CALL_TIMEOUT,
             )
-        except TimeoutError:
+        except TimeoutError as err:
             raise CanDriverError(
                 f"CAN 报文接收超时（{_C_CALL_TIMEOUT}s），硬件可能已断开。"
-            )
+            ) from err
 
         if not actual_num or actual_num <= 0:
             return []

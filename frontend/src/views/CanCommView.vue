@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watchEffect } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import {
   AlertTriangleIcon,
   CheckCircle2Icon,
@@ -46,7 +46,7 @@ const connForm = reactive<CanConnectRequest>({
   device_type: 4, // 默认 USBCAN2
   device_index: 0,
   channel: 0,
-  baud_rate: 250000,
+  baud_rate: 500000,
 })
 
 // 报文监视过滤器与状态
@@ -54,6 +54,7 @@ const isPaused = ref(false)
 const directionFilter = ref<'ALL' | 'TX' | 'RX'>('ALL')
 const searchFilter = ref('')
 const viewMode = ref<'TRACE' | 'GROUP'>('TRACE') // 时间流 vs ID聚合
+const MAX_RENDERED_FRAMES = 200
 
 function setViewMode(value: unknown) {
   if (value === 'TRACE' || value === 'GROUP') {
@@ -67,31 +68,25 @@ function setDirectionFilter(value: unknown) {
   }
 }
 
-// 本地帧缓冲（当暂停滚动时固定画面，继续时同步 store）
+// 本地帧缓冲（暂停时固定当前画面）
 const displayedFrames = ref<CanFrameItem[]>([])
-
-// 响应式同步 store 帧数据至本地显示缓冲（暂停时冻结画面）
-watchEffect(() => {
-  if (!isPaused.value) {
-    displayedFrames.value = [...axleStore.telemetry.recent_frames]
-  }
-})
 
 type ProcessedFrame = CanFrameItem & { count?: number }
 
 // 监听 store 变化，先过滤再按需分组
 const processedFrames = computed<ProcessedFrame[]>(() => {
-  const frames = isPaused.value ? displayedFrames.value : axleStore.telemetry.recent_frames
-  
-  let result = frames.filter((frame) => {
+  const sourceFrames = isPaused.value ? displayedFrames.value : axleStore.telemetry.recent_frames
+  const frames = sourceFrames.slice(-MAX_RENDERED_FRAMES)
+  const query = searchFilter.value.trim().toLowerCase()
+
+  const result = frames.filter((frame) => {
     if (directionFilter.value !== 'ALL' && frame.direction !== directionFilter.value) {
       return false
     }
-    if (searchFilter.value.trim()) {
-      const q = searchFilter.value.trim().toLowerCase()
-      const matchesId = frame.can_id_hex.toLowerCase().includes(q)
-      const matchesName = frame.name.toLowerCase().includes(q)
-      const matchesData = frame.data_hex.toLowerCase().includes(q)
+    if (query) {
+      const matchesId = frame.can_id_hex.toLowerCase().includes(query)
+      const matchesName = frame.name.toLowerCase().includes(query)
+      const matchesData = frame.data_hex.toLowerCase().includes(query)
       if (!matchesId && !matchesName && !matchesData) {
         return false
       }
@@ -120,7 +115,7 @@ const processedFrames = computed<ProcessedFrame[]>(() => {
 
 function togglePause() {
   if (!isPaused.value) {
-    displayedFrames.value = [...axleStore.telemetry.recent_frames]
+    displayedFrames.value = axleStore.telemetry.recent_frames.slice(-MAX_RENDERED_FRAMES)
     isPaused.value = true
   } else {
     isPaused.value = false
@@ -150,7 +145,7 @@ async function handleDisconnect() {
 
 onMounted(async () => {
   await axleStore.refreshStatus()
-  axleStore.startSse()
+  axleStore.startSse(true)
 
   // 从 store 的遥测快照恢复表单，避免组件重建后硬编码默认值覆盖用户选择
   const t = axleStore.telemetry
@@ -161,7 +156,8 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
-  // 不强制停止 SSE，若用户在控制台与诊断页切换保持流不断
+  // 其他页面仍保留核心遥测流，但不再搬运原始报文列表。
+  axleStore.startSse(false)
 })
 </script>
 
@@ -287,8 +283,8 @@ onBeforeUnmount(() => {
                     align="start"
                   >
                     <SelectGroup>
-                      <SelectItem value="250000">250 kbps</SelectItem>
                       <SelectItem value="500000">500 kbps</SelectItem>
+                      <SelectItem value="250000">250 kbps</SelectItem>
                       <SelectItem value="1000000">1000 kbps (1M)</SelectItem>
                       <SelectItem value="125000">125 kbps</SelectItem>
                     </SelectGroup>
@@ -392,9 +388,6 @@ onBeforeUnmount(() => {
           <div>
             <CardTitle class="text-base font-semibold flex items-center gap-2">
               CAN 原始报文实时监视
-              <Badge variant="secondary" class="font-mono text-xs">
-                {{ viewMode === 'TRACE' ? '共 ' + processedFrames.length + ' 帧' : '共 ' + processedFrames.length + ' 个 ID' }}
-              </Badge>
             </CardTitle>
           </div>
 
@@ -477,8 +470,8 @@ onBeforeUnmount(() => {
             <TableHeader class="sticky top-0 bg-muted/80 backdrop-blur-xs text-muted-foreground text-[11px] uppercase border-b border-border/80">
               <TableRow>
                 <TableHead class="w-12 px-2 py-2.5 font-semibold sm:w-20 sm:px-3">{{ viewMode === 'TRACE' ? '序号' : '计数' }}</TableHead>
-                <TableHead class="hidden px-3 py-2.5 font-semibold sm:table-cell sm:w-24">时间戳</TableHead>
-                <TableHead class="w-16 px-2 py-2.5 font-semibold sm:w-20 sm:px-3">方向</TableHead>
+                <TableHead class="hidden px-3 py-2.5 font-semibold sm:table-cell sm:w-32">时间戳</TableHead>
+                <TableHead class="w-16 px-2 py-2.5 font-semibold sm:w-24 sm:px-4">方向</TableHead>
                 <TableHead class="w-20 px-2 py-2.5 font-semibold sm:w-24 sm:px-3">CAN ID</TableHead>
                 <TableHead class="hidden px-3 py-2.5 font-semibold sm:table-cell sm:w-40">报文标识</TableHead>
                 <TableHead class="hidden px-3 py-2.5 font-semibold sm:table-cell sm:w-16">DLC</TableHead>
@@ -490,34 +483,34 @@ onBeforeUnmount(() => {
             </TableHeader>
             <TableBody class="divide-y divide-border/40">
               <TableRow
-                v-for="(item, idx) in processedFrames"
-                :key="viewMode === 'TRACE' ? `${item.timestamp}-${idx}` : `${item.direction}-${item.can_id_hex}`"
+                v-for="item in processedFrames"
+                :key="viewMode === 'TRACE' ? item.sequence : `${item.direction}-${item.can_id_hex}`"
                 class="hover:bg-muted/30 transition-colors"
                 :class="cn(item.direction === 'TX' && 'bg-info/5')"
               >
                 <TableCell class="px-2 py-2 text-muted-foreground sm:px-3">
-                  <span v-if="viewMode === 'TRACE'">#{{ idx + 1 }}</span>
-                  <Badge v-else variant="outline" class="font-mono text-[10px] px-1.5 py-0 bg-background text-muted-foreground">
+                  <span v-if="viewMode === 'TRACE'">#{{ item.sequence }}</span>
+                  <Badge v-else variant="outline" class="bg-background px-1.5 py-0 font-mono text-[10px] font-normal text-muted-foreground">
                     {{ item.count }}
                   </Badge>
                 </TableCell>
-                <TableCell class="hidden px-3 py-2 text-muted-foreground sm:table-cell">{{ item.timestamp }}</TableCell>
-                <TableCell class="px-2 py-2 sm:px-3">
+                <TableCell class="hidden whitespace-nowrap px-3 py-2 font-normal text-muted-foreground sm:table-cell">{{ item.timestamp }}</TableCell>
+                <TableCell class="px-2 py-2 sm:px-4">
                   <Badge
                     :variant="item.direction === 'TX' ? 'info' : 'success'"
-                    class="font-mono text-[10px] px-1.5 py-0"
+                    class="px-1.5 py-0 font-mono text-[10px] font-normal"
                   >
                     {{ item.direction }}
                   </Badge>
                 </TableCell>
-                <TableCell class="px-2 py-2 font-bold text-foreground sm:px-3">
+                <TableCell class="px-2 py-2 font-normal text-foreground sm:px-3">
                   {{ item.can_id_hex }}
                 </TableCell>
                 <TableCell class="hidden px-3 py-2 font-sans text-xs text-foreground truncate sm:table-cell">
                   {{ item.name || '—' }}
                 </TableCell>
                 <TableCell class="hidden px-3 py-2 text-muted-foreground sm:table-cell">{{ item.dlc }}</TableCell>
-                <TableCell class="truncate px-2 py-2 font-mono font-semibold tracking-wider text-foreground sm:px-3">
+                <TableCell class="truncate px-2 py-2 font-mono font-normal tracking-normal text-foreground sm:px-3">
                   {{ item.data_hex }}
                 </TableCell>
               </TableRow>
