@@ -152,6 +152,39 @@ wheels = [
 ]
 
 [[package]]
+name = "electric-drive-axle-backend"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "fastapi", extra = ["standard"] },
+]
+
+[package.dev-dependencies]
+desktop = [
+    { name = "pyinstaller" },
+    { name = "pywebview" },
+]
+dev = [
+    { name = "httpx2" },
+    { name = "pytest" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "fastapi", extras = ["standard"], specifier = ">=0.141.1,<1.0.0" }]
+
+[package.metadata.requires-dev]
+desktop = [
+    { name = "pyinstaller", specifier = ">=6.22.0,<7.0.0" },
+    { name = "pywebview", specifier = ">=6.2.1,<7.0.0" },
+]
+dev = [
+    { name = "httpx2", specifier = ">=2.10.0,<3.0.0" },
+    { name = "pytest", specifier = ">=9.1.1,<10.0.0" },
+    { name = "ruff", specifier = ">=0.15.0,<1.0.0" },
+]
+
+[[package]]
 name = "email-validator"
 version = "2.3.0"
 source = { registry = "https://pypi.org/simple" }
@@ -231,39 +264,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/00/dc/63aaf9913f455e39a7027c27140edd887a87d47d65ac43532d77a51718e5/fastapi_cloud_cli-0.23.0.tar.gz", hash = "sha256:840895bb8d14309aeffc905e0dcd1334d18c6f5da54b735413a8f1cb385e581e", size = 95295, upload-time = "2026-07-28T14:03:33.463Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/86/96/7e9aba6fabce3cb05f320abeef5b81efd5134823ae85d1a517872cb83cbc/fastapi_cloud_cli-0.23.0-py3-none-any.whl", hash = "sha256:1cd2ffa56e92e92c1fc63acc426c214dd928cbeed2a4c7c6a9a5fc85ea73de16", size = 78058, upload-time = "2026-07-28T14:03:34.386Z" },
-]
-
-[[package]]
-name = "fastapi-vue-template-backend"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "fastapi", extra = ["standard"] },
-]
-
-[package.dev-dependencies]
-desktop = [
-    { name = "pyinstaller" },
-    { name = "pywebview" },
-]
-dev = [
-    { name = "httpx2" },
-    { name = "pytest" },
-    { name = "ruff" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "fastapi", extras = ["standard"], specifier = ">=0.141.1,<1.0.0" }]
-
-[package.metadata.requires-dev]
-desktop = [
-    { name = "pyinstaller", specifier = ">=6.22.0,<7.0.0" },
-    { name = "pywebview", specifier = ">=6.2.1,<7.0.0" },
-]
-dev = [
-    { name = "httpx2", specifier = ">=2.10.0,<3.0.0" },
-    { name = "pytest", specifier = ">=9.1.1,<10.0.0" },
-    { name = "ruff", specifier = ">=0.15.0,<1.0.0" },
 ]
 
 [[package]]

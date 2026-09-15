@@ -1,5 +1,5 @@
 [project]
-name = "fastapi-vue-template-backend"
+name = "electric-drive-axle-backend"
 version = "0.1.0"
 description = "A production-friendly FastAPI scaffold with REST and SSE examples."
 readme = "README.md"

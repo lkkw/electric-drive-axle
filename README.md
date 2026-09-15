@@ -7,7 +7,7 @@ shadcn/vue 和 Apache ECharts。
 ## 目录结构
 
 ```text
-fastapi-vue-template/
+electric-drive-axle/
 ├─ backend/
 │  ├─ app/
 │  │  ├─ core/
@@ -210,7 +210,7 @@ uv run --group desktop python build.py --mode onedir --console --smoke-test
 生成文件位于：
 
 ```text
-backend/release/FastAPI-Vue-Template/FastAPI-Vue-Template.exe
+backend/release/Electric-Drive-Axle/Electric-Drive-Axle.exe
 ```
 
 测试完成后再生成最终的单文件、无控制台版本：
@@ -219,7 +219,7 @@ backend/release/FastAPI-Vue-Template/FastAPI-Vue-Template.exe
 uv run --group desktop python build.py --mode onefile --smoke-test
 ```
 
-最终文件位于 `backend/release/FastAPI-Vue-Template.exe`。如需指定名称或图标：
+最终文件位于 `backend/release/Electric-Drive-Axle.exe`。如需指定名称或图标：
 
 ```powershell
 uv run --group desktop python build.py --mode onefile `

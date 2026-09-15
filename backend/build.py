@@ -18,7 +18,7 @@ RELEASE_DIR = BACKEND_DIR / "release"
 PYINSTALLER_WORK_DIR = BACKEND_DIR / "build" / "pyinstaller"
 PYINSTALLER_SPEC_DIR = BACKEND_DIR / "build" / "spec"
 DESKTOP_ENTRY = BACKEND_DIR / "desktop.py"
-DEFAULT_APP_NAME = "FastAPI-Vue-Template"
+DEFAULT_APP_NAME = "Electric-Drive-Axle"
 
 
 def run_command(command: list[str], *, cwd: Path) -> None:

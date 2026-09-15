@@ -80,7 +80,7 @@ sequenceDiagram
 ### 1.3 项目目录地图
 
 ```
-fastapi-vue-template/
+electric-drive-axle/
 ├─ backend/                          # 🐍 Python 后端
 │  ├─ app/
 │  │  ├─ main.py                     # 应用工厂：创建 FastAPI 实例、挂路由

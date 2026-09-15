@@ -32,7 +32,7 @@ export const alova = createAlova({
 
   beforeRequest(method) {
     method.config.headers.Accept = 'application/json'
-    method.config.headers['X-Client-Name'] = 'fastapi-vue-template'
+    method.config.headers['X-Client-Name'] = 'electric-drive-axle'
 
     // 示例：登录后把令牌写到 localStorage，所有 REST 请求会自动携带它。
     const token = localStorage.getItem('access_token')
