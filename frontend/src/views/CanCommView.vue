@@ -399,7 +399,11 @@ onBeforeUnmount(() => {
               <div class="p-2 rounded bg-background border border-border/50">
                 <span class="text-muted-foreground">最近接收:</span>
                 <span class="font-mono ml-1.5">
-                  {{ axleStore.telemetry.last_rx_timestamp ? '毫秒级活跃' : '无数据' }}
+                  {{
+                    axleStore.telemetry.last_rx_timestamp
+                      ? new Date(axleStore.telemetry.last_rx_timestamp * 1000).toTimeString().slice(0, 8)
+                      : '未接收'
+                  }}
                 </span>
               </div>
             </div>

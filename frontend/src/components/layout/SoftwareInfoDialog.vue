@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import {
-  Building2,
   CheckCircle2,
   Cpu,
   Phone,
   Radio,
+  Users,
   Zap,
 } from '@lucide/vue'
 
@@ -24,7 +24,7 @@ import { Separator } from '@/components/ui/separator'
 /**
  * 软件信息弹窗组件 (SoftwareInfoDialog)
  *
- * 使用 shadcn/vue Dialog 原语构建，展示电驱系统研究所及测控上位机的软件规格、
+ * 使用 shadcn/vue Dialog 原语构建，展示开发团队及测控上位机的软件规格、
  * 硬件驱动、通讯协议与技术支持信息。
  */
 const open = defineModel<boolean>('open', { default: false })
@@ -33,15 +33,15 @@ const open = defineModel<boolean>('open', { default: false })
 interface SystemSpec {
   label: string
   value: string
-  icon: typeof Building2
+  icon: typeof Users
   badge?: string
 }
 
 const specs: readonly SystemSpec[] = [
   {
-    label: '研发单位',
+    label: '开发团队',
     value: '电驱系统研究所',
-    icon: Building2,
+    icon: Users,
   },
   {
     label: '系统定位',

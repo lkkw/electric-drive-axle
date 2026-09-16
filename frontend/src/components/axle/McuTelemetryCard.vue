@@ -20,7 +20,6 @@ const axleStore = useAxleStore();
 const mcu1 = computed(() => axleStore.telemetry.mcu_1);
 const mcu2 = computed(() => axleStore.telemetry.mcu_2);
 const tbox = computed(() => axleStore.telemetry.mcu_tbox);
-const safetyConfig = computed(() => axleStore.telemetry.safety.config);
 const activeFaultInfo = computed(() => getMcuFaultInfo(mcu1.value.mcu_flt_code));
 
 const feedbackClock = ref(Date.now());
@@ -219,27 +218,17 @@ const mechPowerKw = computed(() => {
 
         <!-- 母线电压 -->
         <div
-          class="p-3.5 bg-muted/25 rounded-xl border border-border/60 flex flex-col justify-between gap-1"
+          class="p-3.5 bg-muted/25 rounded-xl border border-border/60 flex flex-col gap-1"
         >
           <div class="text-xs text-muted-foreground font-semibold">
             <span>母线电压</span>
           </div>
-          <div
-            class="grid grid-cols-[6ch_auto] items-baseline justify-start whitespace-nowrap font-mono text-2xl font-bold text-primary"
-          >
-            <span class="text-right tabular-nums">{{
-              mcu1.mcu_dc_main_wire_volt
-            }}</span>
+          <div class="text-2xl font-mono font-bold text-primary">
+            {{ mcu1.mcu_dc_main_wire_volt }}
             <span
-              class="ml-1.5 shrink-0 font-sans text-xs font-normal text-muted-foreground"
+              class="text-xs font-normal text-muted-foreground font-sans"
               >V</span
             >
-          </div>
-          <div class="text-[11px] text-muted-foreground">
-            回路状态:
-            <span class="font-mono font-semibold text-foreground">{{
-              mcu1.mcu_dc_main_wire_volt > 60 ? "高压供电" : "安全低压"
-            }}</span>
           </div>
         </div>
 
@@ -290,16 +279,6 @@ const mechPowerKw = computed(() => {
               >℃</span
             >
           </div>
-          <div class="text-[11px] text-muted-foreground">
-            自动停机阈值:
-            <span class="font-mono font-semibold text-foreground">
-              {{
-                safetyConfig.enabled
-                  ? `${safetyConfig.max_motor_temp_c} ℃`
-                  : "未启用"
-              }}
-            </span>
-          </div>
         </div>
 
         <!-- MCU 控制器温度 -->
@@ -323,9 +302,6 @@ const mechPowerKw = computed(() => {
             <span class="text-xs font-normal text-muted-foreground font-sans"
               >℃</span
             >
-          </div>
-          <div class="text-[11px] text-muted-foreground">
-            温度故障由 MCU 反馈位指示
           </div>
         </div>
 
@@ -370,7 +346,6 @@ const mechPowerKw = computed(() => {
           <div class="font-bold text-sm text-foreground">
             {{ WORK_MODE_MAP[mcu2.mcu_motor_work_mod] ?? "无操作" }}
           </div>
-          <div class="text-[11px] text-muted-foreground">当前运行模式</div>
         </div>
 
         <div
@@ -397,7 +372,6 @@ const mechPowerKw = computed(() => {
                     : "未触发"
             }}
           </div>
-          <div class="text-[11px] text-muted-foreground">高压回路状态</div>
         </div>
 
         <div
@@ -416,12 +390,15 @@ const mechPowerKw = computed(() => {
                 : `0x${mcu1.mcu_flt_code.toString(16).toUpperCase()} (${activeFaultInfo?.code ?? '未知代码'})`
             }}
           </div>
-          <div class="text-[11px] text-muted-foreground truncate">
+          <div
+            v-if="
+              mcu1.mcu_flt_code !== 0 || mcu1.mcu_integ_ctr_flt_num > 0
+            "
+            class="text-[11px] text-muted-foreground truncate"
+          >
             {{
               mcu1.mcu_flt_code === 0
-                ? (mcu1.mcu_integ_ctr_flt_num === 0
-                  ? "无故障记录"
-                  : `记录数: ${mcu1.mcu_integ_ctr_flt_num}`)
+                ? `记录数: ${mcu1.mcu_integ_ctr_flt_num}`
                 : `${activeFaultInfo?.meaning ?? '故障定义未收录'} · 记录: ${mcu1.mcu_integ_ctr_flt_num}`
             }}
           </div>

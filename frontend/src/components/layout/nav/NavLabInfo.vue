@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { Building2, Info } from '@lucide/vue'
+import { Info, Users } from '@lucide/vue'
 
 import SoftwareInfoDialog from '@/components/layout/SoftwareInfoDialog.vue'
 import {
@@ -21,15 +21,15 @@ function handleOpenDialog(): void {
 <template>
   <SidebarMenu>
     <SidebarMenuItem>
-      <!-- 左下角机构标识与弹窗触发按钮 -->
+      <!-- 左下角团队标识与弹窗触发按钮 -->
       <SidebarMenuButton
         size="lg"
-        tooltip="电驱系统研究所 · 软件信息"
+        tooltip="开发团队 · 软件信息"
         @click="handleOpenDialog"
       >
-        <!-- 机构图标 -->
+        <!-- 团队图标 -->
         <div class="flex aspect-square size-8 items-center justify-center rounded-lg bg-sidebar-accent text-sidebar-accent-foreground shrink-0">
-          <Building2 class="size-4" />
+          <Users class="size-4" />
         </div>
 
         <!-- 机构与软件概要说明（侧边栏折叠时自动由 group-data-[collapsible=icon] 隐藏） -->

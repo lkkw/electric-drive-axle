@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from "vue";
 import { AlertOctagonIcon, SendIcon } from "@lucide/vue";
+import { toast } from "vue-sonner";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -47,6 +48,13 @@ const TORQUE_MIN = -3000.0;
 const TORQUE_MAX = 3000.0;
 const SPEED_MIN = -12000;
 const SPEED_MAX = 12000;
+
+function notifyCommandError(action: string, error: unknown) {
+  toast.error(`${action}失败`, {
+    description: error instanceof Error ? error.message : "请稍后重试",
+    duration: 4000,
+  });
+}
 
 const isTorqueMode = computed(() => form.work_mode_req === 1);
 const targetConfig = computed(() =>
@@ -113,32 +121,60 @@ async function handleApplyTarget() {
   }
 
   const target = form.target_value;
-  await axleStore.sendCommand({
-    torque_req: isTorqueMode.value ? target : 0,
-    speed_req: isTorqueMode.value ? 0 : target,
-    work_mode_req: form.work_mode_req,
-  });
+  const targetIsTorque = isTorqueMode.value;
+  const config = targetConfig.value;
 
-  isTargetEditing.value = false;
-  syncTargetFromCommand(axleStore.telemetry.command);
+  try {
+    await axleStore.sendCommand({
+      torque_req: targetIsTorque ? target : 0,
+      speed_req: targetIsTorque ? 0 : target,
+      work_mode_req: form.work_mode_req,
+    });
+
+    isTargetEditing.value = false;
+    syncTargetFromCommand(axleStore.telemetry.command);
+    toast.success(`${config.label}已下发`, {
+      description: `${target} ${config.unit}`,
+    });
+  } catch (error) {
+    notifyCommandError(config.actionLabel, error);
+  }
 }
 
 /** 切换使能状态（带防飞车保护） */
 async function handleToggleEnable() {
-  if (form.mcu_en_cmd === 0) {
-    // 安全使能保护：从未使能切换到使能时强制归零转矩与转速，防止上电电机飞车冲击
-    form.mcu_en_cmd = 1;
-    form.target_value = 0;
-    isTargetEditing.value = false;
-    await axleStore.sendCommand({
-      mcu_en_cmd: 1,
-      torque_req: 0,
-      speed_req: 0,
-    });
-    syncTargetFromCommand(axleStore.telemetry.command);
-  } else {
-    form.mcu_en_cmd = 0;
-    await axleStore.sendCommand({ mcu_en_cmd: 0 });
+  if (!axleStore.isConnected || axleStore.loading) {
+    return;
+  }
+
+  const previousEnable = form.mcu_en_cmd;
+  const previousTarget = form.target_value;
+  const previousEditing = isTargetEditing.value;
+  const shouldEnable = form.mcu_en_cmd === 0;
+
+  try {
+    if (shouldEnable) {
+      // 安全使能保护：从未使能切换到使能时强制归零转矩与转速，防止上电电机飞车冲击
+      form.mcu_en_cmd = 1;
+      form.target_value = 0;
+      isTargetEditing.value = false;
+      await axleStore.sendCommand({
+        mcu_en_cmd: 1,
+        torque_req: 0,
+        speed_req: 0,
+      });
+      syncTargetFromCommand(axleStore.telemetry.command);
+      toast.success("使能指令已下发");
+    } else {
+      form.mcu_en_cmd = 0;
+      await axleStore.sendCommand({ mcu_en_cmd: 0 });
+      toast.success("关闭使能指令已下发");
+    }
+  } catch (error) {
+    form.mcu_en_cmd = previousEnable;
+    form.target_value = previousTarget;
+    isTargetEditing.value = previousEditing;
+    notifyCommandError(shouldEnable ? "开启使能" : "关闭使能", error);
   }
 }
 
@@ -152,8 +188,18 @@ async function handleSetGear(value: unknown) {
     return;
   }
 
+  const previousGear = form.gear_sts;
   form.gear_sts = gear;
-  await axleStore.sendCommand({ gear_sts: gear });
+
+  try {
+    await axleStore.sendCommand({ gear_sts: gear });
+    toast.success("挡位指令已下发", {
+      description: GEAR_MAP[gear] ?? `挡位 ${gear}`,
+    });
+  } catch (error) {
+    form.gear_sts = previousGear;
+    notifyCommandError("切换挡位", error);
+  }
 }
 
 /**
@@ -169,35 +215,87 @@ async function handleSetMode(value: unknown) {
     return;
   }
 
+  const previousMode = form.work_mode_req;
+  const previousTarget = form.target_value;
+  const previousEditing = isTargetEditing.value;
+
   form.work_mode_req = mode;
   form.target_value = 0;
   isTargetEditing.value = false;
 
-  await axleStore.sendCommand({
-    work_mode_req: mode,
-    torque_req: 0,
-    speed_req: 0,
-  });
-  syncTargetFromCommand(axleStore.telemetry.command);
+  try {
+    await axleStore.sendCommand({
+      work_mode_req: mode,
+      torque_req: 0,
+      speed_req: 0,
+    });
+    syncTargetFromCommand(axleStore.telemetry.command);
+    toast.success("工作模式指令已下发", {
+      description: WORK_MODE_MAP[mode] ?? `模式 ${mode}`,
+    });
+  } catch (error) {
+    form.work_mode_req = previousMode;
+    form.target_value = previousTarget;
+    isTargetEditing.value = previousEditing;
+    notifyCommandError("切换工作模式", error);
+  }
 }
 
 /** 主动放电只提交自身状态，避免顺带下发尚未确认的目标值。 */
 async function handleToggleDischarge() {
-  form.active_discharge = form.active_discharge === 1 ? 0 : 1;
-  await axleStore.sendCommand({
-    active_discharge: form.active_discharge,
-  });
+  if (!axleStore.isConnected || axleStore.loading) {
+    return;
+  }
+
+  const previousDischarge = form.active_discharge;
+  const shouldStartDischarge = form.active_discharge !== 1;
+  form.active_discharge = shouldStartDischarge ? 1 : 0;
+
+  try {
+    await axleStore.sendCommand({
+      active_discharge: form.active_discharge,
+    });
+    toast.success(
+      shouldStartDischarge ? "主动放电指令已下发" : "停止放电指令已下发",
+    );
+  } catch (error) {
+    form.active_discharge = previousDischarge;
+    notifyCommandError(shouldStartDischarge ? "触发放电" : "停止放电", error);
+  }
 }
 
 /** 一键紧急停机 */
 async function handleEmergencyStop() {
+  if (!axleStore.isConnected || axleStore.loading) {
+    return;
+  }
+
+  const previousState = {
+    targetValue: form.target_value,
+    enable: form.mcu_en_cmd,
+    gear: form.gear_sts,
+    discharge: form.active_discharge,
+    editing: isTargetEditing.value,
+  };
+
   isTargetEditing.value = false;
   form.mcu_en_cmd = 0;
   form.target_value = 0;
   form.gear_sts = 3; // N
   form.active_discharge = 0;
-  await axleStore.triggerEmergencyStop();
-  syncTargetFromCommand(axleStore.telemetry.command);
+
+  try {
+    await axleStore.triggerEmergencyStop();
+    syncTargetFromCommand(axleStore.telemetry.command);
+    toast.warning("紧急停机指令已下发");
+  } catch (error) {
+    form.target_value = previousState.targetValue;
+    form.mcu_en_cmd = previousState.enable;
+    form.gear_sts = previousState.gear;
+    form.active_discharge = previousState.discharge;
+    isTargetEditing.value = previousState.editing;
+    notifyCommandError("紧急停机", error);
+  }
 }
 </script>
 
@@ -212,7 +310,7 @@ async function handleEmergencyStop() {
           size="sm"
           variant="destructive"
           class="w-full shrink-0 justify-center font-bold tracking-widest sm:w-auto sm:min-w-32"
-          :disabled="!axleStore.isConnected"
+          :disabled="!axleStore.isConnected || axleStore.loading"
           @click="handleEmergencyStop"
         >
           <AlertOctagonIcon data-icon="inline-start" />
@@ -230,7 +328,7 @@ async function handleEmergencyStop() {
           size="sm"
           :variant="form.mcu_en_cmd === 1 ? 'success' : 'outline'"
           class="h-10 w-full px-4 font-semibold transition-all"
-          :disabled="!axleStore.isConnected"
+          :disabled="!axleStore.isConnected || axleStore.loading"
           @click="handleToggleEnable"
         >
           {{ form.mcu_en_cmd === 1 ? "关闭使能" : "开启使能" }}
@@ -240,7 +338,7 @@ async function handleEmergencyStop() {
           size="sm"
           :variant="form.active_discharge === 1 ? 'warning' : 'outline'"
           class="h-10 w-full px-4 font-semibold transition-all"
-          :disabled="!axleStore.isConnected"
+          :disabled="!axleStore.isConnected || axleStore.loading"
           @click="handleToggleDischarge"
         >
           {{ form.active_discharge === 1 ? "停止放电" : "触发放电" }}
@@ -260,7 +358,7 @@ async function handleEmergencyStop() {
           </div>
           <Select
             :model-value="String(form.gear_sts)"
-            :disabled="!axleStore.isConnected"
+            :disabled="!axleStore.isConnected || axleStore.loading"
             @update:model-value="handleSetGear"
           >
             <SelectTrigger class="h-9 w-full" aria-label="挡位选择">
@@ -292,7 +390,7 @@ async function handleEmergencyStop() {
           </div>
           <Select
             :model-value="String(form.work_mode_req)"
-            :disabled="!axleStore.isConnected"
+            :disabled="!axleStore.isConnected || axleStore.loading"
             @update:model-value="handleSetMode"
           >
             <SelectTrigger class="h-9 w-full" aria-label="工作模式">

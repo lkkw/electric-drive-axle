@@ -335,7 +335,7 @@ onMounted(async () => {
 
         <AlertDescription class="flex flex-col gap-2">
           <p class="text-xs text-foreground/85">
-            {{ lastSavedRecord.enabled ? '安全监控策略已根据最新参数实时更新，并已接入 MCU 遥测越限监控。' : '安全监控已置为关闭，上位机将不会根据以下阈值自动触发急停。' }}
+            {{ lastSavedRecord.enabled ? '参数已下发并生效。' : '安全监控已停用。' }}
           </p>
 
           <!-- 详细记录快照徽章展示 -->

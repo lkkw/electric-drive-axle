@@ -41,7 +41,7 @@ function acknowledge() {
       <DialogHeader>
         <DialogTitle>自动安全停机已触发</DialogTitle>
         <DialogDescription>
-          上位机已记录越限事件并执行现有急停联锁。
+          监测到反馈参数越限，上位机已执行急停互锁。请确认现场安全后再恢复操作。
         </DialogDescription>
       </DialogHeader>
 
@@ -52,11 +52,6 @@ function acknowledge() {
           {{ trip.message }}
         </AlertDescription>
       </Alert>
-
-      <DialogDescription>
-        请现场确认 MCU
-        与台架已进入安全状态。此弹窗仅确认上位机软件已发出停机请求，不能替代硬件安全状态确认。
-      </DialogDescription>
 
       <DialogFooter>
         <Button type="button" @click="acknowledge"> 我已知悉 </Button>
