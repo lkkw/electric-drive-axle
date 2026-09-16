@@ -323,7 +323,7 @@ class ZlgCanDriver:
     ) -> bool:
         """异步单帧发送 CAN 报文 (受 _tx_lock 保护，防止多协程并发写入破坏 C 驱动缓冲区)。
 
-        :param can_id: CAN ID (例如 0x314)
+        :param can_id: CAN ID (例如 0x258)
         :param data: 报文数据 (最多 8 字节)
         :param channel: 目标通道号
         :param is_extended: 是否扩展帧

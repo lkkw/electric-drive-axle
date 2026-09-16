@@ -220,3 +220,68 @@ def test_decode_length_validation() -> None:
 
     with pytest.raises(ValueError, match="数据长度不足 8 字节"):
         decode_mcu_tbox_motor(short_data)
+
+
+def test_encode_vcu_11_acc_brake_abs() -> None:
+    """测试 VCU_11 加速踏板开度、手刹、制动与 ABS 标志位编码。"""
+    payload = encode_vcu_11(
+        torque_req=200.0,
+        speed_req=1000,
+        acc_position=50.0,  # 50.0% -> raw = 500 = 0x01F4
+        work_mode_req=VcuWorkModeReq.TORQUE,  # 1
+        mcu_en_cmd=VcuMcuEnCmd.ENABLE,  # 1
+        hand_brk_sts=1,  # 1 -> bit 4
+        brk_sts=1,  # 1 -> bit 5
+        abs_work_sts=2,  # 2 (忽略) -> bits 6..7
+        gear_sts=VcuGearStatus.D,  # 1
+        active_discharge=0,
+        life=3,
+    )
+
+    # raw_acc = 500 = 0x01F4
+    assert payload[4] == 0x01
+    assert payload[5] == 0xF4
+
+    # Byte 6: 1 (mode) | (1<<3) | (1<<4) | (1<<5) | (2<<6) = 1 | 8 | 16 | 32 | 128 = 185 = 0xB9
+    assert payload[6] == 0xB9
+
+    # Byte 7: 1 (gear) | (0<<3) | (3<<4) = 1 | 48 = 49 = 0x31
+    assert payload[7] == 0x31
+
+
+def test_decode_mcu_motor_2_slope_sts() -> None:
+    """测试 MCU_Drive_motor_2 (0x35B) 驻坡状态反馈解码。"""
+    # Byte 7:
+    # bit 0: mcu_temp_over = 0
+    # bit 1: mcm_slope_sts = 1 (驻坡) -> 1 << 1 = 2
+    # bit 2..5: life_2 = 4 -> 4 << 2 = 16
+    # byte7 = 2 | 16 = 18 = 0x12
+    raw_data = bytes([0x75, 0x30, 0x2E, 0xE0, 0x75, 0x30, 0x00, 0x12])
+    decoded = decode_mcu_motor_2(raw_data)
+    assert decoded.mcm_slope_sts == 1
+    assert decoded.mcu_life_2 == 4
+
+    # 测试未驻坡 (bit 1 = 0)
+    raw_data_no_slope = bytes([0x75, 0x30, 0x2E, 0xE0, 0x75, 0x30, 0x00, 0x10])
+    decoded_no_slope = decode_mcu_motor_2(raw_data_no_slope)
+    assert decoded_no_slope.mcm_slope_sts == 0
+
+
+def test_mcu_fault_codes_completeness() -> None:
+    """测试 MCU 故障代码表 (DEF 三列) 包含全部 22 个定义项且映射唯一。"""
+    from app.core.can.constants import MCU_FAULT_CODES, MCU_FAULT_MAP
+
+    assert len(MCU_FAULT_CODES) == 22
+    assert len(MCU_FAULT_MAP) == 22
+
+    # 验证关键故障码
+    assert MCU_FAULT_MAP[64].code == "MCU_64"
+    assert MCU_FAULT_MAP[64].meaning == "VCE过流故障"
+    assert "三级" in MCU_FAULT_MAP[64].level
+
+    assert MCU_FAULT_MAP[170].code == "MCU_170"
+    assert MCU_FAULT_MAP[170].meaning == "HVDC软件过压故障"
+
+    assert MCU_FAULT_MAP[11].code == "MCU_11"
+    assert MCU_FAULT_MAP[11].meaning == "IGBT采样温度降额"
+    assert "二级" in MCU_FAULT_MAP[11].level

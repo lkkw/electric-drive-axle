@@ -106,7 +106,7 @@ def test_clear_can_frames() -> None:
 def test_send_raw_can_frame_not_connected() -> None:
     """测试硬件未连接时手动下发报文应返回 400 提示未连接。"""
     payload = {
-        "can_id": 0x314,
+        "can_id": 0x258,
         "data_hex": "01 02 03 04 05 06 07 08",
         "is_extended": False,
         "is_remote": False,
@@ -114,3 +114,16 @@ def test_send_raw_can_frame_not_connected() -> None:
     response = client.post("/api/v1/axle/can/send", json=payload)
     assert response.status_code == 400
     assert "未连接" in response.json()["detail"]
+
+
+def test_get_fault_codes_api() -> None:
+    """测试获取 MCU 故障代码表 (DEF 三列)。"""
+    response = client.get("/api/v1/axle/fault-codes")
+    assert response.status_code == 200
+    fault_codes = response.json()
+    assert len(fault_codes) == 22
+    first = fault_codes[0]
+    assert first["code"] == "MCU_64"
+    assert first["meaning"] == "VCE过流故障"
+    assert "三级" in first["level"]
+    assert first["raw_code"] == 64

@@ -45,14 +45,14 @@ describe('useAxleStore', () => {
       sequence: 1,
       timestamp: '12:30:00.123',
       direction: 'TX',
-      can_id: 0x314,
-      can_id_hex: '0x314',
+      can_id: 0x258,
+      can_id_hex: '0x258',
       dlc: 8,
       data_hex: '00 00 00 00 00 00 00 00',
       name: 'VCU_11',
     })
 
     expect(store.telemetry.recent_frames.length).toBe(1)
-    expect(store.telemetry.recent_frames[0].can_id_hex).toBe('0x314')
+    expect(store.telemetry.recent_frames[0].can_id_hex).toBe('0x258')
   })
 })

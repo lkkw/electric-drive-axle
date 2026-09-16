@@ -7,6 +7,7 @@ from collections.abc import AsyncGenerator
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 
+from app.core.can.constants import MCU_FAULT_CODES
 from app.core.can.driver import CanDriverError
 from app.dependencies import AxleManagerDep
 from app.schemas.axle import (
@@ -15,6 +16,7 @@ from app.schemas.axle import (
     AxleTelemetry,
     CanConnectRequest,
     CanSendRawFrameRequest,
+    McuFaultCodeItem,
     VcuCommandState,
     VcuCommandUpdateRequest,
 )
@@ -23,6 +25,27 @@ from app.services.axle_manager import STREAM_FRAME_LIMIT
 logger = logging.getLogger("app.routers.axle")
 
 router = APIRouter(prefix="/axle", tags=["Electric Drive Axle"])
+
+
+@router.get(
+    "/fault-codes",
+    response_model=list[McuFaultCodeItem],
+    summary="获取电驱桥 MCU 故障代码表 (DEF 三列)",
+)
+async def get_fault_codes() -> list[McuFaultCodeItem]:
+    """获取所有 MCU 故障代码表。
+
+    包含故障码 (DisplayCode)、含义 (DTC Meaning) 与故障级别 (FaultLevel)。
+    """
+    return [
+        McuFaultCodeItem(
+            code=item.code,
+            meaning=item.meaning,
+            level=item.level,
+            raw_code=item.raw_code,
+        )
+        for item in MCU_FAULT_CODES
+    ]
 
 
 @router.post(

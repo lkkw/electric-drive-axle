@@ -4,10 +4,16 @@ import type {
   AxleTelemetry,
   CanConnectRequest,
   CanSendRawFrameRequest,
+  McuFaultCodeItem,
   VcuCommandState,
   VcuCommandUpdateRequest,
 } from '@/types/axle'
 import { alova, API_BASE_URL } from '@/utils/alova'
+
+/** 获取 MCU 故障代码表 (DEF 三列) */
+export const getFaultCodes = () =>
+  alova.Get<McuFaultCodeItem[]>('/axle/fault-codes', { cacheFor: 3600000 })
+
 
 /** 连接周立功 USBCAN 设备 */
 export const connectCan = (config: CanConnectRequest) =>

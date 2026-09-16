@@ -1,8 +1,8 @@
 """Pure Python CAN bitwise encoder and decoder for Electric Drive Axle.
 
 Strictly follows:
-- DBC: 东风无人车.dbc
-- Communication Matrix: DFAC_Matrix_11898_CAN_台架_V0.9-0130_MCU(1).xlsx
+- Communication Matrix: DFAC_Matrix_11898_CAN_DF_8_AMB2_V1.2_PCAN-0813_MCU.xlsx
+- Fault Code Table: DFAC 控制器故障代码-AMB2(2).xlsx
 
 Endianness:
 - All signals follow Motorola LSB (大端高位在前，低位在后)
@@ -48,6 +48,7 @@ class McuDriveMotor2Data:
     mcu_en_sts: int  # MCU使能状态 (0: 未使能, 1: 已使能)
     mcu_motor_temp_extre_over: int  # 驱动电机过温故障 (0: 正常, 1: 故障)
     mcu_mcu_temp_extre_over: int  # MCU控制器过温故障 (0: 正常, 1: 故障)
+    mcm_slope_sts: int  # 驻坡状态反馈 (0: 未驻坡, 1: 驻坡)
     mcu_life_2: int  # MCU_Life_2 循环计数器 [0, 15]
 
 
@@ -73,15 +74,19 @@ def encode_vcu_11(
     *,
     torque_req: float = 0.0,
     speed_req: int = 0,
+    acc_position: float = 0.0,
     work_mode_req: int = 1,
     mcu_en_cmd: int = 0,
+    hand_brk_sts: int = 0,
+    brk_sts: int = 0,
+    abs_work_sts: int = 0,
     gear_sts: int = 3,
     active_discharge: int = 0,
     life: int = 0,
 ) -> bytes:
-    """将上位机控制信号编码为 8 字节 CAN 报文载荷 (VCU_11, ID 0x314)。
+    """将上位机控制信号编码为 8 字节 CAN 报文载荷 (VCU_11, ID 0x258)。
 
-    位映射说明 (Motorola LSB 格式):
+    位映射说明 (Motorola LSB 格式，严格对应通讯矩阵):
     - Byte 0..1: VCU_MotorTorReq (16 bit)
         物理值范围 [-3000.0, 3000.0] Nm，精度 0.1，偏移量 -3000.0
         Raw = round((Torque + 3000.0) / 0.1)
@@ -90,11 +95,16 @@ def encode_vcu_11(
         物理值范围 [-12000, 12000] RPM，精度 1，偏移量 -12000
         Raw = Speed + 12000
         Byte 2 为高 8 位 (MSB)，Byte 3 为低 8 位 (LSB)
-    - Byte 4..5: 保留未分配 (0x00, 0x00)
+    - Byte 4..5: VCU_AccPosition (16 bit)
+        加速踏板开度，物理值范围 [0.0, 100.0] %，精度 0.1，偏移量 0.0
+        Raw = round(AccPosition / 0.1)
+        Byte 4 为高 8 位 (MSB)，Byte 5 为低 8 位 (LSB)
     - Byte 6:
         Bit 0..2 (3 bit): VCU_MotorWorkModReq (模式控制: 0~7)
         Bit 3 (1 bit): VCU_MCUEnCmd (使能命令: 0=未使能, 1=使能)
-        Bit 4..7: 保留 (0)
+        Bit 4 (1 bit): VCU_HandBrkSts (手刹状态: 0=无效, 1=有效)
+        Bit 5 (1 bit): VCU_BrkSts (制动状态: 0=无效, 1=有效)
+        Bit 6..7 (2 bit): VCU_ABSWorkSts (ABS状态: 0=未激活, 1=激活, 2=忽略, 3=预留)
     - Byte 7:
         Bit 0..2 (3 bit): VCU_GearSts (档位状态: 1=D, 2=R, 3=N, 4=L, 5=P)
         Bit 3 (1 bit): VCU_ActiveDischg (主动放电: 0=无效, 1=有效)
@@ -110,12 +120,20 @@ def encode_vcu_11(
     raw_spd = clamped_spd + 12000
     raw_spd = int(clamp_val(raw_spd, 0, 65535))
 
-    # 3. 模式与使能位组合 (Byte 6)
+    # 3. 加速踏板开度原始值计算与范围限制 (Byte 4..5)
+    clamped_acc = float(clamp_val(acc_position, 0.0, 100.0))
+    raw_acc = int(round(clamped_acc / 0.1))
+    raw_acc = int(clamp_val(raw_acc, 0, 65535))
+
+    # 4. 模式、使能、手刹、制动与 ABS 组合 (Byte 6)
     mode_val = int(work_mode_req) & 0x07
     en_val = (int(mcu_en_cmd) & 0x01) << 3
-    byte6 = mode_val | en_val
+    hand_brk_val = (int(hand_brk_sts) & 0x01) << 4
+    brk_val = (int(brk_sts) & 0x01) << 5
+    abs_val = (int(abs_work_sts) & 0x03) << 6
+    byte6 = mode_val | en_val | hand_brk_val | brk_val | abs_val
 
-    # 4. 档位、放电与生命计数器组合 (Byte 7)
+    # 5. 档位、放电与生命计数器组合 (Byte 7)
     gear_val = int(gear_sts) & 0x07
     dischg_val = (int(active_discharge) & 0x01) << 3
     life_val = (int(life) & 0x0F) << 4
@@ -126,8 +144,8 @@ def encode_vcu_11(
     payload[1] = raw_tq & 0xFF
     payload[2] = (raw_spd >> 8) & 0xFF
     payload[3] = raw_spd & 0xFF
-    payload[4] = 0x00
-    payload[5] = 0x00
+    payload[4] = (raw_acc >> 8) & 0xFF
+    payload[5] = raw_acc & 0xFF
     payload[6] = byte6
     payload[7] = byte7
 
@@ -209,6 +227,8 @@ def decode_mcu_motor_2(data: bytes | bytearray | list[int]) -> McuDriveMotor2Dat
     # Byte 7:
     # bit 0: MCU过温故障 (MCU_MCUTempExtreOver)
     mcu_temp_over = data[7] & 0x01
+    # bit 1: 驻坡状态 (MCM_Slope_Sts: 0: 未驻坡, 1: 驻坡)
+    mcm_slope_sts = (data[7] >> 1) & 0x01
     # bit 2..5: MCU_Life_2 循环计数器
     life_2 = (data[7] >> 2) & 0x0F
 
@@ -222,6 +242,7 @@ def decode_mcu_motor_2(data: bytes | bytearray | list[int]) -> McuDriveMotor2Dat
         mcu_en_sts=en_sts,
         mcu_motor_temp_extre_over=motor_temp_over,
         mcu_mcu_temp_extre_over=mcu_temp_over,
+        mcm_slope_sts=mcm_slope_sts,
         mcu_life_2=life_2,
     )
 

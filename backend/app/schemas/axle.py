@@ -36,6 +36,12 @@ class VcuCommandUpdateRequest(BaseModel):
         le=12000,
         description="电机目标转速 (RPM)，分辨率 1",
     )
+    acc_position: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=100.0,
+        description="加速踏板开度 (%)，分辨率 0.1",
+    )
     work_mode_req: int | None = Field(
         default=None,
         ge=0,
@@ -47,6 +53,24 @@ class VcuCommandUpdateRequest(BaseModel):
         ge=0,
         le=1,
         description="MCU 使能命令 (0: 未使能, 1: 使能)",
+    )
+    hand_brk_sts: int | None = Field(
+        default=None,
+        ge=0,
+        le=1,
+        description="手刹状态 (0: 无效, 1: 有效)",
+    )
+    brk_sts: int | None = Field(
+        default=None,
+        ge=0,
+        le=1,
+        description="制动状态 (0: 无效, 1: 有效)",
+    )
+    abs_work_sts: int | None = Field(
+        default=None,
+        ge=0,
+        le=3,
+        description="ABS工作状态 (0: 未激活, 1: 激活, 2: 忽略, 3: 预留)",
     )
     gear_sts: int | None = Field(
         default=None,
@@ -67,8 +91,12 @@ class VcuCommandState(BaseModel):
 
     torque_req: float = 0.0
     speed_req: int = 0
+    acc_position: float = 0.0  # 加速踏板开度 (%)
     work_mode_req: int = 3  # 默认速度模式
     mcu_en_cmd: int = 0  # 默认未使能
+    hand_brk_sts: int = 0  # 手刹状态 (0: 无效, 1: 有效)
+    brk_sts: int = 0  # 制动状态 (0: 无效, 1: 有效)
+    abs_work_sts: int = 0  # ABS状态 (0: 未激活, 1: 激活, 2: 忽略, 3: 预留)
     gear_sts: int = 3  # 默认空挡 N
     active_discharge: int = 0  # 默认不放电
     life: int = 0  # 循环计数器 (0~15)
@@ -98,6 +126,7 @@ class McuDriveMotor2Telemetry(BaseModel):
     mcu_en_sts: int = 0  # MCU使能状态
     mcu_motor_temp_extre_over: int = 0  # 驱动电机过温故障
     mcu_mcu_temp_extre_over: int = 0  # MCU控制器过温故障
+    mcm_slope_sts: int = 0  # 驻坡状态反馈 (0: 未驻坡, 1: 驻坡)
     mcu_life_2: int = 0  # 循环计数器
 
 
@@ -168,7 +197,7 @@ class CanFrameItem(BaseModel):
     timestamp: str = Field(description="时间戳 (HH:MM:SS.mmm)")
     direction: str = Field(description="传输方向 (TX 发送 / RX 接收)")
     can_id: int = Field(description="CAN ID 整数值")
-    can_id_hex: str = Field(description="CAN ID 十六进制表示，如 0x314")
+    can_id_hex: str = Field(description="CAN ID 十六进制表示，如 0x258")
     dlc: int = Field(default=8, description="数据长度 DLC")
     data_hex: str = Field(description="16 进制报文内容，空格分隔")
     name: str = Field(default="", description="报文名称，如 VCU_11")
@@ -223,3 +252,12 @@ class AxleActionResponse(BaseModel):
     success: bool
     message: str
     data: dict[str, str | int | float | bool] | None = None
+
+
+class McuFaultCodeItem(BaseModel):
+    """MCU 故障代码表单项模型 (DEF 三列：故障码、含义、故障级别)。"""
+
+    code: str = Field(description="DisplayCode 仪表显示码 / 故障码 (列 E，例如 'MCU_64')")
+    meaning: str = Field(description="DTC 含义 (列 D，例如 'VCE过流故障')")
+    level: str = Field(description="FaultLevel 故障等级 (列 F，例如 '三级 (Fault)')")
+    raw_code: int = Field(description="CAN 信号 MCU_FltCode 对应原始数值")

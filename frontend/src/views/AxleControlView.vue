@@ -27,7 +27,7 @@ const axleStore = useAxleStore()
         </h1>
       </div>
 
-      <!-- 硬件在线状态与诊断页面直通入口 -->
+      <!-- 硬件在线状态入口 -->
       <div class="flex items-center gap-2">
         <Button
           as-child

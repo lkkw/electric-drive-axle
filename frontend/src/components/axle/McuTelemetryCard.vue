@@ -5,9 +5,11 @@ import { AlertTriangleIcon } from "@lucide/vue";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import FaultCodeDialog from "@/components/axle/FaultCodeDialog.vue";
 import { useAxleStore } from "@/stores/useAxleStore";
 import {
   FAULT_LEVEL_MAP,
+  getMcuFaultInfo,
   MOTOR_STATE_MAP,
   TBOX_FAULT_LEVEL_MAP,
   WORK_MODE_MAP,
@@ -19,6 +21,7 @@ const mcu1 = computed(() => axleStore.telemetry.mcu_1);
 const mcu2 = computed(() => axleStore.telemetry.mcu_2);
 const tbox = computed(() => axleStore.telemetry.mcu_tbox);
 const safetyConfig = computed(() => axleStore.telemetry.safety.config);
+const activeFaultInfo = computed(() => getMcuFaultInfo(mcu1.value.mcu_flt_code));
 
 const feedbackClock = ref(Date.now());
 let feedbackClockTimer: ReturnType<typeof setInterval> | undefined;
@@ -122,6 +125,13 @@ const mechPowerKw = computed(() => {
           >
             {{ enableStatusText }}
           </Badge>
+          <Badge
+            v-if="hasFreshMcu2Feedback && mcu2.mcm_slope_sts === 1"
+            variant="outline"
+            class="border-warning/60 bg-warning/5 text-warning font-semibold text-xs px-1.5 py-0"
+          >
+            驻坡中
+          </Badge>
         </div>
 
         <div class="flex flex-wrap items-center gap-2">
@@ -155,6 +165,7 @@ const mechPowerKw = computed(() => {
             <AlertTriangleIcon data-icon="inline-start" />
             {{ TBOX_FAULT_LEVEL_MAP[mcu1.mcu_tbox_flt_levl] ?? "温度故障报警" }}
           </Badge>
+          <FaultCodeDialog :current-flt-code="mcu1.mcu_flt_code" />
         </div>
       </div>
     </CardHeader>
@@ -394,7 +405,7 @@ const mechPowerKw = computed(() => {
         >
           <div class="text-muted-foreground font-medium">MCU 故障诊断</div>
           <div
-            class="font-bold text-sm font-mono"
+            class="font-bold text-sm font-mono truncate"
             :class="
               cn(mcu1.mcu_flt_code === 0 ? 'text-success' : 'text-destructive')
             "
@@ -402,14 +413,16 @@ const mechPowerKw = computed(() => {
             {{
               mcu1.mcu_flt_code === 0
                 ? "0x00 (正常)"
-                : `0x${mcu1.mcu_flt_code.toString(16).toUpperCase()}`
+                : `0x${mcu1.mcu_flt_code.toString(16).toUpperCase()} (${activeFaultInfo?.code ?? '未知代码'})`
             }}
           </div>
-          <div class="text-[11px] text-muted-foreground">
+          <div class="text-[11px] text-muted-foreground truncate">
             {{
-              mcu1.mcu_integ_ctr_flt_num === 0
-                ? "无故障记录"
-                : `记录数: ${mcu1.mcu_integ_ctr_flt_num}`
+              mcu1.mcu_flt_code === 0
+                ? (mcu1.mcu_integ_ctr_flt_num === 0
+                  ? "无故障记录"
+                  : `记录数: ${mcu1.mcu_integ_ctr_flt_num}`)
+                : `${activeFaultInfo?.meaning ?? '故障定义未收录'} · 记录: ${mcu1.mcu_integ_ctr_flt_num}`
             }}
           </div>
         </div>

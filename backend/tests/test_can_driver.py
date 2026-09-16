@@ -140,7 +140,7 @@ def test_transmit_serialization_lock() -> None:
         driver._dll = mock_dll
 
         # 并发发送 10 帧报文
-        coros = [driver.transmit(can_id=0x314, data=bytes([i] * 8), channel=0) for i in range(10)]
+        coros = [driver.transmit(can_id=0x258, data=bytes([i] * 8), channel=0) for i in range(10)]
         results = await asyncio.gather(*coros)
 
         assert all(results)
@@ -170,7 +170,7 @@ def test_transmit_sets_remote_frame_flag() -> None:
         driver._dll = mock_dll
 
         sent = await driver.transmit(
-            can_id=0x314,
+            can_id=0x258,
             data=bytes(8),
             channel=0,
             is_remote=True,

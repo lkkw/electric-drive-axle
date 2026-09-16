@@ -168,7 +168,7 @@ def test_axle_manager_sse_subscription() -> None:
 
 
 def test_vcu_life_remains_continuous_through_disconnect_frames() -> None:
-    """周期帧与停止前保护帧必须保持 0x314 Life 逐帧连续。"""
+    """周期帧与停止前保护帧必须保持 VCU_11 (0x258) Life 逐帧连续。"""
 
     async def run_test() -> None:
         driver = create_mock_driver()

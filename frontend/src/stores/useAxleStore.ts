@@ -55,6 +55,7 @@ const createInitialTelemetry = (): AxleTelemetry => ({
     mcu_en_sts: 0,
     mcu_motor_temp_extre_over: 0,
     mcu_mcu_temp_extre_over: 0,
+    mcm_slope_sts: 0,
     mcu_life_2: 0,
   },
   mcu_2_last_rx_timestamp: null,

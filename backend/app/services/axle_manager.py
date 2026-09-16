@@ -2,7 +2,7 @@
 
 Manages:
 - CAN hardware lifecycle (connect, disconnect, channel setup).
-- Real-time 10ms high-precision transmission task (VCU_11, ID 0x314).
+- Real-time 10ms high-precision transmission task (VCU_11, ID 0x258).
 - Real-time high-throughput receive task and bitwise decoding (0x35A, 0x35B, 0x35C).
 - Thread-safe state synchronization and SSE subscription broadcast.
 """
@@ -367,6 +367,7 @@ class AxleManager:
                     (update.mcu_en_cmd is not None and update.mcu_en_cmd != 0)
                     or (update.torque_req is not None and update.torque_req != 0.0)
                     or (update.speed_req is not None and update.speed_req != 0)
+                    or (update.acc_position is not None and update.acc_position != 0.0)
                 ):
                     raise CanDriverError(
                         "系统处于急停锁定状态，禁止使能或设置非零控制量。"
@@ -377,10 +378,18 @@ class AxleManager:
                 self._command.torque_req = update.torque_req
             if update.speed_req is not None:
                 self._command.speed_req = update.speed_req
+            if update.acc_position is not None:
+                self._command.acc_position = update.acc_position
             if update.work_mode_req is not None:
                 self._command.work_mode_req = update.work_mode_req
             if update.mcu_en_cmd is not None:
                 self._command.mcu_en_cmd = update.mcu_en_cmd
+            if update.hand_brk_sts is not None:
+                self._command.hand_brk_sts = update.hand_brk_sts
+            if update.brk_sts is not None:
+                self._command.brk_sts = update.brk_sts
+            if update.abs_work_sts is not None:
+                self._command.abs_work_sts = update.abs_work_sts
             if update.gear_sts is not None:
                 self._command.gear_sts = update.gear_sts
             if update.active_discharge is not None:
@@ -391,13 +400,14 @@ class AxleManager:
     async def emergency_stop(self) -> VcuCommandState:
         """一键紧急停机 (Emergency Stop)。
 
-        立即将使能置 0、目标转矩与转速归零、挂入空挡，并立即强制发送一帧控制报文。
+        立即将使能置 0、目标转矩/转速/油门开度归零、挂入空挡，并立即强制发送一帧控制报文。
         """
         async with self._lock:
             self._is_emergency_locked = True
             self._command.mcu_en_cmd = 0
             self._command.torque_req = 0.0
             self._command.speed_req = 0
+            self._command.acc_position = 0.0
             self._command.gear_sts = 3  # 空挡 N
             self._command.active_discharge = 0
 
@@ -408,8 +418,12 @@ class AxleManager:
                 payload = encode_vcu_11(
                     torque_req=0.0,
                     speed_req=0,
+                    acc_position=0.0,
                     work_mode_req=self._command.work_mode_req,
                     mcu_en_cmd=0,
+                    hand_brk_sts=self._command.hand_brk_sts,
+                    brk_sts=self._command.brk_sts,
+                    abs_work_sts=self._command.abs_work_sts,
                     gear_sts=3,
                     active_discharge=0,
                     life=self._command.life,
@@ -741,8 +755,12 @@ class AxleManager:
                         self._command.life = (self._command.life + 1) % 16
                         tq = self._command.torque_req
                         spd = self._command.speed_req
+                        acc = self._command.acc_position
                         mode = self._command.work_mode_req
                         en = self._command.mcu_en_cmd
+                        hand_brk = self._command.hand_brk_sts
+                        brk = self._command.brk_sts
+                        abs_work = self._command.abs_work_sts
                         gear = self._command.gear_sts
                         dischg = self._command.active_discharge
                         life = self._command.life
@@ -750,6 +768,7 @@ class AxleManager:
                             self._disconnecting
                             and tq == 0.0
                             and spd == 0
+                            and acc == 0.0
                             and mode == 0
                             and en == 0
                             and gear == 3
@@ -760,8 +779,12 @@ class AxleManager:
                     payload = encode_vcu_11(
                         torque_req=tq,
                         speed_req=spd,
+                        acc_position=acc,
                         work_mode_req=mode,
                         mcu_en_cmd=en,
+                        hand_brk_sts=hand_brk,
+                        brk_sts=brk,
+                        abs_work_sts=abs_work,
                         gear_sts=gear,
                         active_discharge=dischg,
                         life=life,
@@ -882,6 +905,7 @@ class AxleManager:
                                         mcu_en_sts=d2.mcu_en_sts,
                                         mcu_motor_temp_extre_over=d2.mcu_motor_temp_extre_over,
                                         mcu_mcu_temp_extre_over=d2.mcu_mcu_temp_extre_over,
+                                        mcm_slope_sts=d2.mcm_slope_sts,
                                         mcu_life_2=d2.mcu_life_2,
                                     )
                                     self._mcu_2_last_rx_timestamp = time.time()
@@ -900,6 +924,15 @@ class AxleManager:
                                     )
                                     self._mcu_tbox_last_rx_timestamp = time.time()
                                     safety_feedback_updated = True
+
+                                case 0x5EF:  # CAN_ID_MCU_SV
+                                    frame_name = "MCU_SV (版本信息)"
+
+                                case 0x251:  # CAN_ID_ONEBOX_ESC_TSC1
+                                    frame_name = "Onebox_ESC_TSC1 (牵引控制)"
+
+                                case 0x254:  # CAN_ID_ONEBOX_ESC_ENERGYRECOVERY
+                                    frame_name = "Onebox_ESC_EnergyRecovery (能量回收)"
 
                                 case _:
                                     # 其他未知或未配置的 CAN 报文
