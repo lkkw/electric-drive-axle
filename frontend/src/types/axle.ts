@@ -133,9 +133,9 @@ export interface AxleActionResponse {
 
 export const WORK_MODE_MAP: Record<number, string> = {
   0: '关闭',
-  1: '转矩模式',
-  2: '零转矩模式',
-  3: '转速模式',
+  1: '扭矩模式',
+  2: '零扭矩模式',
+  3: '速度模式',
   4: '制动模式',
   5: '前进模式',
   6: '倒车模式',

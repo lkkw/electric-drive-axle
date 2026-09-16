@@ -33,7 +33,7 @@ const TARGET_INPUT_ID = "motor-target-value";
 // 本地控制指令表单
 const form = reactive({
   target_value: 0,
-  work_mode_req: 3, // 转速模式
+  work_mode_req: 3, // 速度模式
   mcu_en_cmd: 0, // 0: 未使能, 1: 使能
   gear_sts: 3, // 3: 空挡 N
   active_discharge: 0,
@@ -52,22 +52,22 @@ const isTorqueMode = computed(() => form.work_mode_req === 1);
 const targetConfig = computed(() =>
   isTorqueMode.value
     ? {
-        label: "目标转矩",
+        label: "目标扭矩",
         unit: "Nm",
         min: TORQUE_MIN,
         max: TORQUE_MAX,
         step: 0.1,
         placeholder: "0.0",
-        actionLabel: "下发转矩",
+        actionLabel: "下发扭矩",
       }
     : {
-        label: "目标转速",
+        label: "目标速度",
         unit: "RPM",
         min: SPEED_MIN,
         max: SPEED_MAX,
         step: 1,
         placeholder: "0",
-        actionLabel: "下发转速",
+        actionLabel: "下发速度",
       },
 );
 
@@ -148,21 +148,37 @@ async function handleSetGear(value: unknown) {
   if (!SELECTABLE_GEAR_IDS.some((gearId) => gearId === gear)) {
     return;
   }
+  if (!axleStore.isConnected || axleStore.loading) {
+    return;
+  }
 
   form.gear_sts = gear;
   await axleStore.sendCommand({ gear_sts: gear });
 }
 
-/** 工作模式仅更新本地待下发值，实际切换由目标按钮统一提交。 */
-function handleSetMode(value: unknown) {
+/**
+ * 切换工作模式：立即下发至下位机。
+ * 电控防冲击保护：模式切换时强制将目标扭矩与目标速度归零同步下发，杜绝带载突变飞车或急刹风险。
+ */
+async function handleSetMode(value: unknown) {
   const mode = Number(value);
   if (mode !== 1 && mode !== 3) {
+    return;
+  }
+  if (!axleStore.isConnected || axleStore.loading) {
     return;
   }
 
   form.work_mode_req = mode;
   form.target_value = 0;
-  isTargetEditing.value = true;
+  isTargetEditing.value = false;
+
+  await axleStore.sendCommand({
+    work_mode_req: mode,
+    torque_req: 0,
+    speed_req: 0,
+  });
+  syncTargetFromCommand(axleStore.telemetry.command);
 }
 
 /** 主动放电只提交自身状态，避免顺带下发尚未确认的目标值。 */
@@ -244,6 +260,7 @@ async function handleEmergencyStop() {
           </div>
           <Select
             :model-value="String(form.gear_sts)"
+            :disabled="!axleStore.isConnected"
             @update:model-value="handleSetGear"
           >
             <SelectTrigger class="h-9 w-full" aria-label="挡位选择">
@@ -270,15 +287,12 @@ async function handleEmergencyStop() {
               工作模式
             </FieldLabel>
             <span class="text-xs font-mono text-info font-semibold">
-              已下发:
-              {{
-                WORK_MODE_MAP[axleStore.telemetry.command.work_mode_req] ??
-                "未知模式"
-              }}
+              当前: {{ WORK_MODE_MAP[axleStore.telemetry.command.work_mode_req] ?? "未知" }}
             </span>
           </div>
           <Select
             :model-value="String(form.work_mode_req)"
+            :disabled="!axleStore.isConnected"
             @update:model-value="handleSetMode"
           >
             <SelectTrigger class="h-9 w-full" aria-label="工作模式">

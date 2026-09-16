@@ -54,10 +54,10 @@ BAUDRATE_TIMINGS: dict[int, tuple[int, int]] = {
 class VcuWorkModeReq(IntEnum):
     """VCU 电机工作模式控制 (VCU_MotorWorkModReq)."""
 
-    CLOSE = 0  # 关闭（保留，默认转矩控制）
-    TORQUE = 1  # 转矩模式
-    ZERO_TORQUE = 2  # 零转矩模式
-    SPEED = 3  # 转速模式
+    CLOSE = 0  # 关闭（保留，默认扭矩控制）
+    TORQUE = 1  # 扭矩模式
+    ZERO_TORQUE = 2  # 零扭矩模式
+    SPEED = 3  # 速度模式
     BRAKE = 4  # 制动模式（保留）
     FORWARD = 5  # 前进模式（保留）
     REVERSE = 6  # 倒车模式（保留）
@@ -91,9 +91,9 @@ class McuMotorWorkMode(IntEnum):
     """MCU 电机工作模式反馈 (MCU_MotorWorkMod)."""
 
     NO_OPERATION = 0  # 无操作
-    TORQUE = 1  # 转矩模式
-    ZERO_TORQUE = 2  # 零转矩模式
-    SPEED = 3  # 转速模式
+    TORQUE = 1  # 扭矩模式
+    ZERO_TORQUE = 2  # 零扭矩模式
+    SPEED = 3  # 速度模式
     BRAKE = 4  # 制动模式
     FORWARD = 5  # 前进模式
     REVERSE = 6  # 倒车模式

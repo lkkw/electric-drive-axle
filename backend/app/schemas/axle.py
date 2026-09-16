@@ -40,7 +40,7 @@ class VcuCommandUpdateRequest(BaseModel):
         default=None,
         ge=0,
         le=7,
-        description="电机工作模式 (1: 转矩模式, 3: 转速模式, 0: 关闭)",
+        description="电机工作模式 (1: 扭矩模式, 3: 速度模式, 0: 关闭)",
     )
     mcu_en_cmd: int | None = Field(
         default=None,
@@ -67,7 +67,7 @@ class VcuCommandState(BaseModel):
 
     torque_req: float = 0.0
     speed_req: int = 0
-    work_mode_req: int = 3  # 默认转速模式
+    work_mode_req: int = 3  # 默认速度模式
     mcu_en_cmd: int = 0  # 默认未使能
     gear_sts: int = 3  # 默认空挡 N
     active_discharge: int = 0  # 默认不放电
