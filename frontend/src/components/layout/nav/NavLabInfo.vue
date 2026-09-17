@@ -32,10 +32,9 @@ function handleOpenDialog(): void {
           <Users class="size-4" />
         </div>
 
-        <!-- 机构与软件概要说明（侧边栏折叠时自动由 group-data-[collapsible=icon] 隐藏） -->
-        <div class="grid flex-1 text-left text-sm leading-tight group-data-[collapsible=icon]:hidden">
-          <span class="truncate font-semibold text-sidebar-foreground">电驱系统研究所</span>
-          <span class="truncate text-xs text-sidebar-foreground/70">软件信息 · v1.0.0</span>
+        <!-- 机构团队名称（侧边栏折叠时自动由 group-data-[collapsible=icon] 隐藏） -->
+        <div class="flex flex-1 items-center text-left group-data-[collapsible=icon]:hidden">
+          <span class="truncate font-semibold text-sm text-sidebar-foreground">电驱系统研究所</span>
         </div>
 
         <!-- 信息指引图标 -->

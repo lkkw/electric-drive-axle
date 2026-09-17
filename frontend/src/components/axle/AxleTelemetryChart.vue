@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import VChart from 'vue-echarts'
 import 'vue-echarts/style.css'
 import '@/components/charts/echarts'
@@ -10,9 +10,10 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { resolveCssColor } from '@/lib/chart-theme'
-import { useAxleStore } from '@/stores/useAxleStore'
+import { useAxleStore, type HistoryPoint } from '@/stores/useAxleStore'
 
 const axleStore = useAxleStore()
+const DISPLAY_REFRESH_INTERVAL_MS = 500
 
 interface ChartColors {
   muted: string
@@ -29,6 +30,12 @@ const fallbackColors: ChartColors = {
 }
 
 const chartColors = ref<ChartColors>(fallbackColors)
+const displayedHistorySeries = ref<HistoryPoint[]>([])
+let displayRefreshTimer: ReturnType<typeof setInterval> | undefined
+
+function refreshDisplayedHistory() {
+  displayedHistorySeries.value = axleStore.historySeries.slice()
+}
 
 function resolveThemeColors(): ChartColors {
   return {
@@ -41,9 +48,9 @@ function resolveThemeColors(): ChartColors {
 
 const chartOption = computed(() => {
   const colors = chartColors.value
-  const times = axleStore.historySeries.map((p) => p.time)
-  const speeds = axleStore.historySeries.map((p) => p.speed)
-  const torques = axleStore.historySeries.map((p) => p.torque)
+  const times = displayedHistorySeries.value.map((p) => p.time)
+  const speeds = displayedHistorySeries.value.map((p) => p.speed)
+  const torques = displayedHistorySeries.value.map((p) => p.torque)
 
   return {
     animation: false,
@@ -117,6 +124,17 @@ const chartOption = computed(() => {
 
 onMounted(() => {
   chartColors.value = resolveThemeColors()
+  refreshDisplayedHistory()
+  displayRefreshTimer = setInterval(
+    refreshDisplayedHistory,
+    DISPLAY_REFRESH_INTERVAL_MS,
+  )
+})
+
+onBeforeUnmount(() => {
+  if (displayRefreshTimer) {
+    clearInterval(displayRefreshTimer)
+  }
 })
 </script>
 
