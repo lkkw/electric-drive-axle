@@ -85,6 +85,13 @@ const enableStatusText = computed(() => {
   return mcu2.value.mcu_en_sts === 1 ? "MCU 已使能" : "MCU 未使能";
 });
 
+const workModeStatusText = computed(() => {
+  if (!hasFreshMcu2Feedback.value) return "模式未知";
+  return mcu2.value.mcu_motor_work_mod === 0
+    ? "无操作"
+    : (WORK_MODE_MAP[mcu2.value.mcu_motor_work_mod] ?? "未知模式");
+});
+
 const isSystemNormal = computed(() => {
   return (
     hasFreshMcu1Feedback.value &&
@@ -102,34 +109,31 @@ const isSystemNormal = computed(() => {
     <CardHeader class="p-3 border-b bg-muted/20">
       <div class="flex flex-col gap-2 xl:flex-row xl:items-center xl:justify-between">
         <div class="flex flex-wrap items-center gap-1.5">
-          <CardTitle class="text-sm font-bold flex items-center gap-1.5 mr-1">
-            <span>MCU 实时反馈</span>
-            <Badge variant="outline" class="font-mono text-[10px] px-1 py-0 text-muted-foreground font-normal">
-              0x35A/B
-            </Badge>
+          <CardTitle class="text-sm font-bold mr-1">
+            MCU 实时反馈
           </CardTitle>
 
           <!-- 0x35B 核心硬件与控制状态 -->
           <Badge
             :variant="hasFreshMcu2Feedback && mcu2.mcu_lv_sts === 1 ? 'success' : 'secondary'"
-            class="font-mono text-xs px-1.5 py-0"
+            class="text-xs px-1.5 py-0"
           >
             {{ lowVoltageStatusText }}
           </Badge>
 
           <Badge
             :variant="hasFreshMcu2Feedback && mcu2.mcu_en_sts === 1 ? 'success' : 'secondary'"
-            class="font-mono text-xs px-1.5 py-0"
+            class="text-xs px-1.5 py-0"
           >
             {{ enableStatusText }}
           </Badge>
 
           <Badge
-            variant="outline"
+            :variant="hasFreshMcu2Feedback && mcu2.mcu_motor_work_mod !== 0 ? 'outline' : 'secondary'"
             class="text-xs px-1.5 py-0"
-            :class="mcu2.mcu_motor_work_mod !== 0 ? 'text-primary font-medium' : 'text-muted-foreground'"
+            :class="hasFreshMcu2Feedback && mcu2.mcu_motor_work_mod !== 0 ? 'border-primary/50 text-primary font-medium' : ''"
           >
-            {{ WORK_MODE_MAP[mcu2.mcu_motor_work_mod] ?? '无操作' }}
+            {{ workModeStatusText }}
           </Badge>
 
           <Badge
@@ -144,21 +148,14 @@ const isSystemNormal = computed(() => {
         <!-- 故障报警与安全指示 -->
         <div class="flex flex-wrap items-center gap-1.5">
           <Badge
-            v-if="!hasFreshMcu1Feedback"
-            variant="secondary"
-            class="font-mono text-xs px-1.5 py-0"
-          >
-            0x35A 未通信
-          </Badge>
-          <Badge
-            v-else-if="isSystemNormal"
+            v-if="isSystemNormal"
             variant="outline"
             class="border-success/60 bg-success/5 text-success font-semibold text-xs px-1.5 py-0"
           >
             系统正常
           </Badge>
           <Badge
-            v-else-if="mcu1.mcu_flt_levl !== 0"
+            v-else-if="hasFreshMcu1Feedback && mcu1.mcu_flt_levl !== 0"
             variant="destructive"
             class="animate-pulse font-bold text-xs px-1.5 py-0"
           >
@@ -258,11 +255,11 @@ const isSystemNormal = computed(() => {
       <div class="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
         <!-- 控制与运行状态 (0x35B) -->
         <div class="p-2.5 rounded-lg border border-border/60 bg-muted/25 flex flex-col justify-between gap-1.5">
-          <div class="font-semibold text-muted-foreground">控制状态 (0x35B)</div>
+          <div class="font-semibold text-muted-foreground">控制状态</div>
           <div class="space-y-1">
             <div class="flex items-center justify-between">
               <span class="text-muted-foreground">工作模式:</span>
-              <span class="font-medium text-foreground">{{ WORK_MODE_MAP[mcu2.mcu_motor_work_mod] ?? '无操作' }}</span>
+              <span class="font-medium text-foreground">{{ workModeStatusText }}</span>
             </div>
             <div class="flex items-center justify-between">
               <span class="text-muted-foreground">MCU使能:</span>
@@ -285,7 +282,7 @@ const isSystemNormal = computed(() => {
 
         <!-- 温度安全保护 (0x35A/B) -->
         <div class="p-2.5 rounded-lg border border-border/60 bg-muted/25 flex flex-col justify-between gap-1.5">
-          <div class="font-semibold text-muted-foreground">温度安全 (0x35A/B)</div>
+          <div class="font-semibold text-muted-foreground">温度安全</div>
           <div class="space-y-1">
             <div class="flex items-center justify-between">
               <span class="text-muted-foreground">电机过温:</span>
@@ -316,7 +313,7 @@ const isSystemNormal = computed(() => {
 
         <!-- MCU 故障诊断 (0x35A) -->
         <div class="p-2.5 rounded-lg border border-border/60 bg-muted/25 flex flex-col justify-between gap-1.5">
-          <div class="font-semibold text-muted-foreground">故障诊断 (0x35A)</div>
+          <div class="font-semibold text-muted-foreground">故障诊断</div>
           <div class="space-y-1">
             <div class="flex items-center justify-between">
               <span class="text-muted-foreground">故障代码:</span>

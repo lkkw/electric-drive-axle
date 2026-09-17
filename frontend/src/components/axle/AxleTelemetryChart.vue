@@ -142,7 +142,7 @@ onBeforeUnmount(() => {
   <Card class="border-border shadow-xs">
     <CardHeader class="pb-3 border-b bg-muted/20">
       <CardTitle class="text-base font-semibold">
-        实时转速与转矩曲线
+        转速与转矩曲线
       </CardTitle>
     </CardHeader>
 

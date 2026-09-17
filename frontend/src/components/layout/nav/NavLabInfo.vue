@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { Info, Users } from '@lucide/vue'
+import { Info } from '@lucide/vue'
 
 import SoftwareInfoDialog from '@/components/layout/SoftwareInfoDialog.vue'
 import {
@@ -27,9 +27,9 @@ function handleOpenDialog(): void {
         tooltip="开发团队 · 软件信息"
         @click="handleOpenDialog"
       >
-        <!-- 团队图标 -->
-        <div class="flex aspect-square size-8 items-center justify-center rounded-lg bg-sidebar-accent text-sidebar-accent-foreground shrink-0">
-          <Users class="size-4" />
+        <!-- 企业品牌简称标识 (株齿 ZC) -->
+        <div class="flex aspect-square size-8 items-center justify-center rounded-lg bg-sidebar-accent text-sidebar-accent-foreground font-bold text-xs tracking-tight shrink-0 select-none">
+          ZC
         </div>
 
         <!-- 机构团队名称（侧边栏折叠时自动由 group-data-[collapsible=icon] 隐藏） -->
