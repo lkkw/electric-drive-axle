@@ -303,18 +303,18 @@ async function handleEmergencyStop() {
   <Card class="border-border shadow-xs h-full flex flex-col">
     <CardHeader class="pb-3 border-b bg-muted/20">
       <div
-        class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"
+        class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between min-h-7"
       >
-        <CardTitle class="text-base font-semibold"> 电驱控制 </CardTitle>
+        <CardTitle class="text-base font-semibold">电驱控制</CardTitle>
         <Button
           size="sm"
-          variant="destructive"
-          class="w-full shrink-0 justify-center font-bold tracking-widest sm:w-auto sm:min-w-32"
+          variant="outline"
+          class="w-full shrink-0 justify-center font-semibold px-3 border-destructive/40 bg-destructive/10 text-destructive hover:bg-destructive hover:text-destructive-foreground hover:border-destructive transition-all active:scale-[0.98] sm:w-auto"
           :disabled="!axleStore.isConnected || axleStore.loading"
           @click="handleEmergencyStop"
         >
           <AlertOctagonIcon data-icon="inline-start" />
-          紧急停机
+          <span>紧急停机</span>
         </Button>
       </div>
     </CardHeader>

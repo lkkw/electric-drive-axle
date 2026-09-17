@@ -29,6 +29,16 @@ const feedbackClock = ref(Date.now());
 let feedbackClockTimer: ReturnType<typeof setInterval> | undefined;
 let displayRefreshTimer: ReturnType<typeof setInterval> | undefined;
 
+function formatDecimal(val: number | null | undefined, precision = 1): string {
+  const num = Number(val);
+  return Number.isFinite(num) ? num.toFixed(precision) : (0).toFixed(precision);
+}
+
+function formatInteger(val: number | null | undefined): string {
+  const num = Number(val);
+  return Number.isFinite(num) ? Math.round(num).toString() : "0";
+}
+
 function refreshDisplayedTelemetry(): void {
   displayedMcu1.value = { ...axleStore.telemetry.mcu_1 };
   displayedMcu2.value = { ...axleStore.telemetry.mcu_2 };
@@ -106,10 +116,10 @@ const isSystemNormal = computed(() => {
 <template>
   <Card class="border-border shadow-xs h-full flex flex-col">
     <!-- 顶部状态栏 -->
-    <CardHeader class="p-3 border-b bg-muted/20">
-      <div class="flex flex-col gap-2 xl:flex-row xl:items-center xl:justify-between">
-        <div class="flex flex-wrap items-center gap-1.5">
-          <CardTitle class="text-sm font-bold mr-1">
+    <CardHeader class="pb-3 border-b bg-muted/20">
+      <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between min-h-7">
+        <div class="flex flex-wrap items-center gap-2">
+          <CardTitle class="text-base font-semibold">
             MCU 实时反馈
           </CardTitle>
 
@@ -146,7 +156,7 @@ const isSystemNormal = computed(() => {
         </div>
 
         <!-- 故障报警与安全指示 -->
-        <div class="flex flex-wrap items-center gap-1.5">
+        <div class="flex flex-wrap items-center gap-1.5 shrink-0">
           <Badge
             v-if="isSystemNormal"
             variant="outline"
@@ -187,66 +197,88 @@ const isSystemNormal = computed(() => {
       <!-- 动力与电气核心数值网格 (3列 x 2行，严格对齐 CAN 报文信号) -->
       <div class="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
         <!-- 实际转速 (0x35B) -->
-        <div class="p-2.5 bg-muted/25 rounded-lg border border-border/60 flex flex-col justify-center">
+        <div class="p-2.5 bg-muted/25 rounded-lg border border-border/60 flex flex-col justify-between gap-1">
           <div class="text-xs text-muted-foreground font-semibold">实际转速</div>
-          <div class="text-xl font-mono font-bold text-info">
-            {{ mcu2.mcu_act_motor_spd }}
-            <span class="text-xs font-normal text-muted-foreground font-sans">RPM</span>
+          <div class="flex items-baseline justify-between gap-1">
+            <span class="text-xl font-mono font-bold tabular-nums text-info truncate">
+              {{ formatInteger(mcu2.mcu_act_motor_spd) }}
+            </span>
+            <span class="text-xs font-normal text-muted-foreground font-sans shrink-0 select-none">
+              RPM
+            </span>
           </div>
         </div>
 
         <!-- 实际转矩 (0x35B) -->
-        <div class="p-2.5 bg-muted/25 rounded-lg border border-border/60 flex flex-col justify-center">
+        <div class="p-2.5 bg-muted/25 rounded-lg border border-border/60 flex flex-col justify-between gap-1">
           <div class="text-xs text-muted-foreground font-semibold">实际转矩</div>
-          <div class="text-xl font-mono font-bold text-warning">
-            {{ mcu2.mcu_act_motor_tq }}
-            <span class="text-xs font-normal text-muted-foreground font-sans">Nm</span>
+          <div class="flex items-baseline justify-between gap-1">
+            <span class="text-xl font-mono font-bold tabular-nums text-warning truncate">
+              {{ formatDecimal(mcu2.mcu_act_motor_tq) }}
+            </span>
+            <span class="text-xs font-normal text-muted-foreground font-sans shrink-0 select-none">
+              Nm
+            </span>
           </div>
         </div>
 
         <!-- 最大可用转矩 (0x35B) -->
-        <div class="p-2.5 bg-muted/25 rounded-lg border border-border/60 flex flex-col justify-center">
+        <div class="p-2.5 bg-muted/25 rounded-lg border border-border/60 flex flex-col justify-between gap-1">
           <div class="text-xs text-muted-foreground font-semibold">最大可用转矩</div>
-          <div class="text-xl font-mono font-bold text-foreground">
-            {{ mcu2.mcu_motor_tor_max }}
-            <span class="text-xs font-normal text-muted-foreground font-sans">Nm</span>
+          <div class="flex items-baseline justify-between gap-1">
+            <span class="text-xl font-mono font-bold tabular-nums text-foreground truncate">
+              {{ formatDecimal(mcu2.mcu_motor_tor_max) }}
+            </span>
+            <span class="text-xs font-normal text-muted-foreground font-sans shrink-0 select-none">
+              Nm
+            </span>
           </div>
         </div>
 
         <!-- 母线电压 (0x35A) -->
-        <div class="p-2.5 bg-muted/25 rounded-lg border border-border/60 flex flex-col justify-center">
+        <div class="p-2.5 bg-muted/25 rounded-lg border border-border/60 flex flex-col justify-between gap-1">
           <div class="text-xs text-muted-foreground font-semibold">母线电压</div>
-          <div class="text-xl font-mono font-bold text-primary">
-            {{ mcu1.mcu_dc_main_wire_volt }}
-            <span class="text-xs font-normal text-muted-foreground font-sans">V</span>
+          <div class="flex items-baseline justify-between gap-1">
+            <span class="text-xl font-mono font-bold tabular-nums text-primary truncate">
+              {{ formatDecimal(mcu1.mcu_dc_main_wire_volt) }}
+            </span>
+            <span class="text-xs font-normal text-muted-foreground font-sans shrink-0 select-none">
+              V
+            </span>
           </div>
         </div>
 
         <!-- 母线电流 (0x35A) -->
-        <div class="p-2.5 bg-muted/25 rounded-lg border border-border/60 flex flex-col justify-center">
+        <div class="p-2.5 bg-muted/25 rounded-lg border border-border/60 flex flex-col justify-between gap-1">
           <div class="text-xs text-muted-foreground font-semibold">母线电流</div>
-          <div class="text-xl font-mono font-bold text-info">
-            {{ mcu1.mcu_dc_main_wire_curr }}
-            <span class="text-xs font-normal text-muted-foreground font-sans">A</span>
+          <div class="flex items-baseline justify-between gap-1">
+            <span class="text-xl font-mono font-bold tabular-nums text-info truncate">
+              {{ formatDecimal(mcu1.mcu_dc_main_wire_curr) }}
+            </span>
+            <span class="text-xs font-normal text-muted-foreground font-sans shrink-0 select-none">
+              A
+            </span>
           </div>
         </div>
 
         <!-- 主动放电状态 (0x35B) -->
-        <div class="p-2.5 bg-muted/25 rounded-lg border border-border/60 flex flex-col justify-center">
+        <div class="p-2.5 bg-muted/25 rounded-lg border border-border/60 flex flex-col justify-between gap-1">
           <div class="text-xs text-muted-foreground font-semibold">主动放电</div>
-          <div
-            class="text-base font-bold truncate"
-            :class="cn(
-              mcu2.mcu_active_dischrg_sts === 0 ? 'text-warning' :
-              mcu2.mcu_active_dischrg_sts === 1 ? 'text-success' :
-              mcu2.mcu_active_dischrg_sts === 2 ? 'text-destructive' : 'text-muted-foreground'
-            )"
-          >
-            {{
-              mcu2.mcu_active_dischrg_sts === 0 ? "放电中" :
-              mcu2.mcu_active_dischrg_sts === 1 ? "放电完成" :
-              mcu2.mcu_active_dischrg_sts === 2 ? "放电失败" : "未触发"
-            }}
+          <div class="flex items-baseline justify-between">
+            <span
+              class="text-base font-bold truncate leading-7"
+              :class="cn(
+                mcu2.mcu_active_dischrg_sts === 0 ? 'text-warning' :
+                mcu2.mcu_active_dischrg_sts === 1 ? 'text-success' :
+                mcu2.mcu_active_dischrg_sts === 2 ? 'text-destructive' : 'text-muted-foreground'
+              )"
+            >
+              {{
+                mcu2.mcu_active_dischrg_sts === 0 ? "放电中" :
+                mcu2.mcu_active_dischrg_sts === 1 ? "放电完成" :
+                mcu2.mcu_active_dischrg_sts === 2 ? "放电失败" : "未触发"
+              }}
+            </span>
           </div>
         </div>
       </div>
@@ -275,7 +307,7 @@ const isSystemNormal = computed(() => {
             </div>
             <div class="flex items-center justify-between">
               <span class="text-muted-foreground">通信心跳:</span>
-              <span class="font-mono text-foreground font-semibold">#{{ mcu2.mcu_life_2 }}</span>
+              <span class="font-mono text-foreground font-semibold">{{ mcu2.mcu_life_2 }}</span>
             </div>
           </div>
         </div>
@@ -331,7 +363,7 @@ const isSystemNormal = computed(() => {
             </div>
             <div class="flex items-center justify-between">
               <span class="text-muted-foreground">通信心跳:</span>
-              <span class="font-mono text-foreground font-semibold">#{{ mcu1.mcu_life_1 }}</span>
+              <span class="font-mono text-foreground font-semibold">{{ mcu1.mcu_life_1 }}</span>
             </div>
           </div>
         </div>
