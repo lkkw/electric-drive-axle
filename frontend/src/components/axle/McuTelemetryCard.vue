@@ -193,78 +193,78 @@ const isSystemNormal = computed(() => {
       </div>
     </CardHeader>
 
-    <CardContent class="p-3 sm:p-4 flex-1 flex flex-col justify-between gap-3">
+    <CardContent class="p-4 sm:p-5 flex-1 flex flex-col gap-4">
       <!-- 动力与电气核心数值网格 (3列 x 2行，严格对齐 CAN 报文信号) -->
       <div class="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
         <!-- 实际转速 (0x35B) -->
-        <div class="p-2.5 bg-muted/25 rounded-lg border border-border/60 flex flex-col justify-between gap-1">
-          <div class="text-xs text-muted-foreground font-semibold">实际转速</div>
-          <div class="flex items-baseline justify-between gap-1">
-            <span class="text-xl font-mono font-bold tabular-nums text-info truncate">
+        <div class="p-3 bg-muted/25 rounded-lg border border-border/60 flex flex-col justify-between gap-1.5">
+          <div class="text-xs text-muted-foreground font-semibold h-4 flex items-center">实际转速</div>
+          <div class="flex items-baseline justify-between gap-1 h-7">
+            <span class="text-xl font-mono font-bold tabular-nums text-info truncate leading-7">
               {{ formatInteger(mcu2.mcu_act_motor_spd) }}
             </span>
-            <span class="text-xs font-normal text-muted-foreground font-sans shrink-0 select-none">
+            <span class="text-xs font-normal text-muted-foreground font-sans shrink-0 select-none leading-7">
               RPM
             </span>
           </div>
         </div>
 
         <!-- 实际转矩 (0x35B) -->
-        <div class="p-2.5 bg-muted/25 rounded-lg border border-border/60 flex flex-col justify-between gap-1">
-          <div class="text-xs text-muted-foreground font-semibold">实际转矩</div>
-          <div class="flex items-baseline justify-between gap-1">
-            <span class="text-xl font-mono font-bold tabular-nums text-warning truncate">
+        <div class="p-3 bg-muted/25 rounded-lg border border-border/60 flex flex-col justify-between gap-1.5">
+          <div class="text-xs text-muted-foreground font-semibold h-4 flex items-center">实际转矩</div>
+          <div class="flex items-baseline justify-between gap-1 h-7">
+            <span class="text-xl font-mono font-bold tabular-nums text-warning truncate leading-7">
               {{ formatDecimal(mcu2.mcu_act_motor_tq) }}
             </span>
-            <span class="text-xs font-normal text-muted-foreground font-sans shrink-0 select-none">
+            <span class="text-xs font-normal text-muted-foreground font-sans shrink-0 select-none leading-7">
               Nm
             </span>
           </div>
         </div>
 
         <!-- 最大可用转矩 (0x35B) -->
-        <div class="p-2.5 bg-muted/25 rounded-lg border border-border/60 flex flex-col justify-between gap-1">
-          <div class="text-xs text-muted-foreground font-semibold">最大可用转矩</div>
-          <div class="flex items-baseline justify-between gap-1">
-            <span class="text-xl font-mono font-bold tabular-nums text-foreground truncate">
+        <div class="p-3 bg-muted/25 rounded-lg border border-border/60 flex flex-col justify-between gap-1.5">
+          <div class="text-xs text-muted-foreground font-semibold h-4 flex items-center">最大可用转矩</div>
+          <div class="flex items-baseline justify-between gap-1 h-7">
+            <span class="text-xl font-mono font-bold tabular-nums text-foreground truncate leading-7">
               {{ formatDecimal(mcu2.mcu_motor_tor_max) }}
             </span>
-            <span class="text-xs font-normal text-muted-foreground font-sans shrink-0 select-none">
+            <span class="text-xs font-normal text-muted-foreground font-sans shrink-0 select-none leading-7">
               Nm
             </span>
           </div>
         </div>
 
         <!-- 母线电压 (0x35A) -->
-        <div class="p-2.5 bg-muted/25 rounded-lg border border-border/60 flex flex-col justify-between gap-1">
-          <div class="text-xs text-muted-foreground font-semibold">母线电压</div>
-          <div class="flex items-baseline justify-between gap-1">
-            <span class="text-xl font-mono font-bold tabular-nums text-primary truncate">
+        <div class="p-3 bg-muted/25 rounded-lg border border-border/60 flex flex-col justify-between gap-1.5">
+          <div class="text-xs text-muted-foreground font-semibold h-4 flex items-center">母线电压</div>
+          <div class="flex items-baseline justify-between gap-1 h-7">
+            <span class="text-xl font-mono font-bold tabular-nums text-primary truncate leading-7">
               {{ formatDecimal(mcu1.mcu_dc_main_wire_volt) }}
             </span>
-            <span class="text-xs font-normal text-muted-foreground font-sans shrink-0 select-none">
+            <span class="text-xs font-normal text-muted-foreground font-sans shrink-0 select-none leading-7">
               V
             </span>
           </div>
         </div>
 
         <!-- 母线电流 (0x35A) -->
-        <div class="p-2.5 bg-muted/25 rounded-lg border border-border/60 flex flex-col justify-between gap-1">
-          <div class="text-xs text-muted-foreground font-semibold">母线电流</div>
-          <div class="flex items-baseline justify-between gap-1">
-            <span class="text-xl font-mono font-bold tabular-nums text-info truncate">
+        <div class="p-3 bg-muted/25 rounded-lg border border-border/60 flex flex-col justify-between gap-1.5">
+          <div class="text-xs text-muted-foreground font-semibold h-4 flex items-center">母线电流</div>
+          <div class="flex items-baseline justify-between gap-1 h-7">
+            <span class="text-xl font-mono font-bold tabular-nums text-info truncate leading-7">
               {{ formatDecimal(mcu1.mcu_dc_main_wire_curr) }}
             </span>
-            <span class="text-xs font-normal text-muted-foreground font-sans shrink-0 select-none">
+            <span class="text-xs font-normal text-muted-foreground font-sans shrink-0 select-none leading-7">
               A
             </span>
           </div>
         </div>
 
         <!-- 主动放电状态 (0x35B) -->
-        <div class="p-2.5 bg-muted/25 rounded-lg border border-border/60 flex flex-col justify-between gap-1">
-          <div class="text-xs text-muted-foreground font-semibold">主动放电</div>
-          <div class="flex items-baseline justify-between">
+        <div class="p-3 bg-muted/25 rounded-lg border border-border/60 flex flex-col justify-between gap-1.5">
+          <div class="text-xs text-muted-foreground font-semibold h-4 flex items-center">主动放电</div>
+          <div class="flex items-baseline justify-between h-7">
             <span
               class="text-base font-bold truncate leading-7"
               :class="cn(
@@ -283,29 +283,39 @@ const isSystemNormal = computed(() => {
         </div>
       </div>
 
-      <!-- 控制状态、温度安全与故障诊断 (3列等宽对齐排布) -->
-      <div class="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
+      <!-- 小节标题：运行监控与状态诊断 -->
+      <div class="flex items-center gap-2 text-xs font-semibold text-muted-foreground select-none">
+        <span class="size-1.5 rounded-full bg-primary/60" />
+        <span>运行监控与状态诊断</span>
+        <div class="flex-1 h-px bg-border/60" />
+      </div>
+
+      <!-- 控制状态、温度安全与故障诊断 (3列等宽对齐排布，工控键值表设计) -->
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs flex-1">
         <!-- 控制与运行状态 (0x35B) -->
-        <div class="p-2.5 rounded-lg border border-border/60 bg-muted/25 flex flex-col justify-between gap-1.5">
-          <div class="font-semibold text-muted-foreground">控制状态</div>
-          <div class="space-y-1">
-            <div class="flex items-center justify-between">
+        <div class="rounded-lg border border-border/60 bg-muted/20 overflow-hidden flex flex-col">
+          <div class="px-3 py-1.5 border-b border-border/50 bg-muted/40 flex items-center justify-between">
+            <span class="font-semibold text-xs text-foreground/90">控制状态</span>
+            <span class="text-[10px] font-mono text-muted-foreground">0x35B</span>
+          </div>
+          <div class="px-3 py-1 flex-1 flex flex-col justify-around divide-y divide-border/30">
+            <div class="flex items-center justify-between min-h-7 py-1">
               <span class="text-muted-foreground">工作模式:</span>
               <span class="font-medium text-foreground">{{ workModeStatusText }}</span>
             </div>
-            <div class="flex items-center justify-between">
+            <div class="flex items-center justify-between min-h-7 py-1">
               <span class="text-muted-foreground">MCU使能:</span>
               <span :class="mcu2.mcu_en_sts === 1 ? 'text-success font-semibold' : 'text-muted-foreground'">
                 {{ mcu2.mcu_en_sts === 1 ? '已使能' : '未使能' }}
               </span>
             </div>
-            <div class="flex items-center justify-between">
+            <div class="flex items-center justify-between min-h-7 py-1">
               <span class="text-muted-foreground">低压状态:</span>
               <span :class="mcu2.mcu_lv_sts === 1 ? 'text-success font-semibold' : 'text-muted-foreground'">
                 {{ mcu2.mcu_lv_sts === 1 ? '正常' : '无效' }}
               </span>
             </div>
-            <div class="flex items-center justify-between">
+            <div class="flex items-center justify-between min-h-7 py-1">
               <span class="text-muted-foreground">通信心跳:</span>
               <span class="font-mono text-foreground font-semibold">{{ mcu2.mcu_life_2 }}</span>
             </div>
@@ -313,28 +323,31 @@ const isSystemNormal = computed(() => {
         </div>
 
         <!-- 温度安全保护 (0x35A/B) -->
-        <div class="p-2.5 rounded-lg border border-border/60 bg-muted/25 flex flex-col justify-between gap-1.5">
-          <div class="font-semibold text-muted-foreground">温度安全</div>
-          <div class="space-y-1">
-            <div class="flex items-center justify-between">
+        <div class="rounded-lg border border-border/60 bg-muted/20 overflow-hidden flex flex-col">
+          <div class="px-3 py-1.5 border-b border-border/50 bg-muted/40 flex items-center justify-between">
+            <span class="font-semibold text-xs text-foreground/90">温度安全</span>
+            <span class="text-[10px] font-mono text-muted-foreground">0x35A/B</span>
+          </div>
+          <div class="px-3 py-1 flex-1 flex flex-col justify-around divide-y divide-border/30">
+            <div class="flex items-center justify-between min-h-7 py-1">
               <span class="text-muted-foreground">电机过温:</span>
               <span :class="mcu2.mcu_motor_temp_extre_over === 1 ? 'text-destructive font-bold' : 'text-success'">
                 {{ mcu2.mcu_motor_temp_extre_over === 1 ? '过温报警' : '正常' }}
               </span>
             </div>
-            <div class="flex items-center justify-between">
+            <div class="flex items-center justify-between min-h-7 py-1">
               <span class="text-muted-foreground">控制器过温:</span>
               <span :class="mcu2.mcu_mcu_temp_extre_over === 1 ? 'text-destructive font-bold' : 'text-success'">
                 {{ mcu2.mcu_mcu_temp_extre_over === 1 ? '过温报警' : '正常' }}
               </span>
             </div>
-            <div class="flex items-center justify-between">
+            <div class="flex items-center justify-between min-h-7 py-1">
               <span class="text-muted-foreground">温度故障级:</span>
               <span :class="mcu1.mcu_tbox_flt_levl === 0 ? 'text-success' : 'text-destructive font-semibold'">
                 {{ TBOX_FAULT_LEVEL_MAP[mcu1.mcu_tbox_flt_levl] ?? '正常' }}
               </span>
             </div>
-            <div class="flex items-center justify-between">
+            <div class="flex items-center justify-between min-h-7 py-1">
               <span class="text-muted-foreground">驻坡状态:</span>
               <span :class="mcu2.mcm_slope_sts === 1 ? 'text-warning font-semibold' : 'text-foreground'">
                 {{ mcu2.mcm_slope_sts === 1 ? '驻坡中' : '未驻坡' }}
@@ -344,24 +357,27 @@ const isSystemNormal = computed(() => {
         </div>
 
         <!-- MCU 故障诊断 (0x35A) -->
-        <div class="p-2.5 rounded-lg border border-border/60 bg-muted/25 flex flex-col justify-between gap-1.5">
-          <div class="font-semibold text-muted-foreground">故障诊断</div>
-          <div class="space-y-1">
-            <div class="flex items-center justify-between">
+        <div class="rounded-lg border border-border/60 bg-muted/20 overflow-hidden flex flex-col">
+          <div class="px-3 py-1.5 border-b border-border/50 bg-muted/40 flex items-center justify-between">
+            <span class="font-semibold text-xs text-foreground/90">故障诊断</span>
+            <span class="text-[10px] font-mono text-muted-foreground">0x35A</span>
+          </div>
+          <div class="px-3 py-1 flex-1 flex flex-col justify-around divide-y divide-border/30">
+            <div class="flex items-center justify-between min-h-7 py-1">
               <span class="text-muted-foreground">故障代码:</span>
               <span class="font-mono font-bold" :class="mcu1.mcu_flt_code === 0 ? 'text-success' : 'text-destructive'">
                 {{ mcu1.mcu_flt_code === 0 ? "0x00 (正常)" : `0x${mcu1.mcu_flt_code.toString(16).toUpperCase()} (${activeFaultInfo?.code ?? '未知'})` }}
               </span>
             </div>
-            <div class="flex items-center justify-between">
+            <div class="flex items-center justify-between min-h-7 py-1">
               <span class="text-muted-foreground">故障等级:</span>
               <span class="font-medium text-foreground">{{ FAULT_LEVEL_MAP[mcu1.mcu_flt_levl]?.text ?? '无故障' }}</span>
             </div>
-            <div class="flex items-center justify-between">
+            <div class="flex items-center justify-between min-h-7 py-1">
               <span class="text-muted-foreground">记录条数:</span>
               <span class="font-mono">{{ mcu1.mcu_integ_ctr_flt_num }}</span>
             </div>
-            <div class="flex items-center justify-between">
+            <div class="flex items-center justify-between min-h-7 py-1">
               <span class="text-muted-foreground">通信心跳:</span>
               <span class="font-mono text-foreground font-semibold">{{ mcu1.mcu_life_1 }}</span>
             </div>

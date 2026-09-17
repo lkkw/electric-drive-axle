@@ -25,7 +25,7 @@ describe('useCycleTest composable', () => {
     expect(cycle.steps.value[2].targetSpeed).toBe(-1000)
     expect(cycle.steps.value[3].gear).toBe(3) // N 换向缓冲
     expect(cycle.steps.value[3].targetSpeed).toBe(0)
-    expect(cycle.totalLoops.value).toBe(5)
+    expect(cycle.totalLoops.value).toBe(1)
   })
 
   it('支持自定义修改工况步骤与重置状态', () => {
@@ -36,7 +36,7 @@ describe('useCycleTest composable', () => {
     expect(cycle.totalLoops.value).toBe(3)
     cycle.resetToDefault()
     expect(cycle.steps.value[0].targetSpeed).toBe(1000)
-    expect(cycle.totalLoops.value).toBe(5)
+    expect(cycle.totalLoops.value).toBe(1)
     expect(cycle.status.value).toBe('idle')
   })
 

@@ -464,42 +464,27 @@ async function handleEmergencyStop() {
             </span>
           </div>
 
-          <div class="flex items-center gap-3">
-            <div class="relative flex-1">
-              <Input
-                :id="TARGET_INPUT_ID"
-                v-model.number="form.target_value"
-                type="number"
-                :step="targetConfig.step"
-                :min="targetConfig.min"
-                :max="targetConfig.max"
-                :placeholder="targetConfig.placeholder"
-                class="h-9 w-full px-3 pr-12 font-mono font-bold tracking-tight [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-inner-spin-button]:m-0"
-                :aria-invalid="isTargetInvalid || undefined"
-                :disabled="!axleStore.isConnected"
-                @focus="isTargetEditing = true"
-                @keydown.enter.prevent="handleApplyTarget"
-                @wheel.prevent
-              />
-              <div
-                class="absolute inset-y-0 right-3 flex items-center pointer-events-none text-xs font-semibold text-muted-foreground font-mono"
-              >
-                {{ targetConfig.unit }}
-              </div>
-            </div>
-
-            <Button
-              size="sm"
-              variant="default"
-              class="h-9 min-w-28 shrink-0 justify-center px-4 font-semibold sm:min-w-36"
-              :disabled="
-                isTargetInvalid || axleStore.loading || !axleStore.isConnected
-              "
-              @click="handleApplyTarget"
+          <div class="relative w-full">
+            <Input
+              :id="TARGET_INPUT_ID"
+              v-model.number="form.target_value"
+              type="number"
+              :step="targetConfig.step"
+              :min="targetConfig.min"
+              :max="targetConfig.max"
+              :placeholder="targetConfig.placeholder"
+              class="h-9 w-full px-3 pr-12 font-mono font-bold tracking-tight [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-inner-spin-button]:m-0"
+              :aria-invalid="isTargetInvalid || undefined"
+              :disabled="!axleStore.isConnected"
+              @focus="isTargetEditing = true"
+              @keydown.enter.prevent="handleApplyTarget"
+              @wheel.prevent
+            />
+            <div
+              class="absolute inset-y-0 right-3 flex items-center pointer-events-none text-xs font-semibold text-muted-foreground font-mono"
             >
-              <SendIcon data-icon="inline-start" />
-              {{ targetConfig.actionLabel }}
-            </Button>
+              {{ targetConfig.unit }}
+            </div>
           </div>
 
           <FieldError v-if="isTargetInvalid">
@@ -509,6 +494,20 @@ async function handleEmergencyStop() {
             之间的{{ isTorqueMode ? "数值" : "整数" }}。
           </FieldError>
         </Field>
+
+        <!-- 独立一行的下发按钮 -->
+        <Button
+          size="default"
+          variant="default"
+          class="h-10 w-full justify-center px-4 font-semibold shadow-xs transition-all active:scale-[0.99]"
+          :disabled="
+            isTargetInvalid || axleStore.loading || !axleStore.isConnected
+          "
+          @click="handleApplyTarget"
+        >
+          <SendIcon data-icon="inline-start" />
+          <span>{{ targetConfig.actionLabel }}</span>
+        </Button>
       </FieldGroup>
         </CardContent>
       </TabsContent>

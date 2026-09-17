@@ -25,7 +25,7 @@ export function useCycleTest() {
   const axleStore = useAxleStore()
 
   const status = ref<CycleTestStatus>('idle')
-  const totalLoops = ref<number>(5) // 0 表示无限循环
+  const totalLoops = ref<number>(1) // 默认1圈，即单次循环完成即停止
   const currentLoop = ref<number>(1)
   const currentStepIndex = ref<number>(0)
   const stepRemainingSeconds = ref<number>(0)
@@ -76,10 +76,10 @@ export function useCycleTest() {
 
   function resetToDefault() {
     steps.value = DEFAULT_CYCLE_STEPS.map((s) => ({ ...s, id: `step-${nextStepId++}` }))
-    totalLoops.value = 5
+    totalLoops.value = 1
     resetTest()
     toast.success('已恢复为默认工况配置', {
-      description: '正转 60s → 缓冲 5s → 反转 60s → 缓冲 5s (5圈)',
+      description: '正转 60s → 缓冲 5s → 反转 60s → 缓冲 5s (1圈)',
     })
   }
 

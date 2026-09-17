@@ -101,25 +101,18 @@ function handleResetToDefault() {
       <!-- 循环圈数配置 -->
       <div class="flex items-center gap-2">
         <label class="text-xs font-semibold text-muted-foreground whitespace-nowrap">循环圈数:</label>
-        <div class="flex items-center gap-1.5">
+        <div class="relative w-20">
           <Input
             v-model.number="cycle.totalLoops.value"
             type="number"
-            min="0"
+            min="1"
             max="999"
-            class="h-7.5 w-16 text-xs font-mono font-bold text-center"
+            class="h-7.5 w-full pr-6 text-xs font-mono font-bold text-center [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
             :disabled="cycle.isRunning.value || cycle.isPaused.value"
           />
-          <Button
-            size="sm"
-            variant="outline"
-            class="h-7.5 px-2 text-xs shrink-0 font-medium"
-            :disabled="cycle.isRunning.value || cycle.isPaused.value"
-            :title="cycle.totalLoops.value === 0 ? '点击切为5圈' : '点击设为无限循环'"
-            @click="cycle.totalLoops.value = cycle.totalLoops.value === 0 ? 5 : 0"
-          >
-            {{ cycle.totalLoops.value === 0 ? '设定' : '∞ 无限' }}
-          </Button>
+          <span class="absolute inset-y-0 right-2 flex items-center pointer-events-none text-xs text-muted-foreground font-medium select-none">
+            圈
+          </span>
         </div>
       </div>
 
@@ -232,10 +225,10 @@ function handleResetToDefault() {
       <!-- 列标签表头 (与每一步单行输入严格对齐) -->
       <div class="flex items-center gap-1.5 px-2 text-[11px] font-semibold text-muted-foreground select-none">
         <span class="w-5 shrink-0" aria-hidden="true"></span>
-        <span class="w-20 sm:w-24 shrink-0">步骤名称</span>
-        <span class="w-25 sm:w-28 shrink-0">挡位</span>
-        <span class="flex-1 min-w-24 sm:min-w-28">目标转速</span>
-        <span class="w-18 sm:w-22 shrink-0 text-center">时长</span>
+        <span class="flex-1 min-w-28 sm:min-w-32">步骤名称</span>
+        <span class="w-28 sm:w-32 shrink-0">挡位</span>
+        <span class="w-25 sm:w-28 shrink-0">目标转速</span>
+        <span class="w-18 sm:w-20 shrink-0 text-center">时长</span>
         <span class="w-7 shrink-0"></span>
       </div>
 
@@ -264,7 +257,7 @@ function handleResetToDefault() {
             <Input
               v-model="step.name"
               placeholder="名称"
-              class="h-7 text-xs w-20 sm:w-24 shrink-0 px-2"
+              class="h-7 text-xs flex-1 min-w-28 sm:min-w-32 px-2"
               :disabled="cycle.isRunning.value || cycle.isPaused.value"
             />
 
@@ -274,7 +267,7 @@ function handleResetToDefault() {
               :disabled="cycle.isRunning.value || cycle.isPaused.value"
               @update:model-value="(val) => handleGearChange(step, val)"
             >
-              <SelectTrigger class="h-7 w-25 sm:w-28 px-2 text-xs">
+              <SelectTrigger class="h-7 w-28 sm:w-32 px-2.5 text-xs">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent position="popper" side="bottom" align="end">
@@ -287,7 +280,7 @@ function handleResetToDefault() {
             </Select>
 
             <!-- 目标转速 -->
-            <div class="relative flex-1 min-w-24 sm:min-w-28">
+            <div class="relative w-25 sm:w-28 shrink-0">
               <Input
                 v-model.number="step.targetSpeed"
                 type="number"
@@ -303,7 +296,7 @@ function handleResetToDefault() {
             </div>
 
             <!-- 持续时间 -->
-            <div class="relative w-18 sm:w-22 shrink-0">
+            <div class="relative w-18 sm:w-20 shrink-0">
               <Input
                 v-model.number="step.durationSeconds"
                 type="number"
