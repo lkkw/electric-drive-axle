@@ -22,7 +22,7 @@ class Settings:
 def get_settings() -> Settings:
     """Create settings once per process."""
     return Settings(
-        app_name=getenv("APP_NAME", "FastAPI + Vue 3 Template"),
+        app_name=getenv("APP_NAME", "株齿 2.5T 电驱桥下线测试上位机"),
         app_version=getenv("APP_VERSION", "0.1.0"),
         api_prefix=getenv("API_PREFIX", "/api/v1"),
         cors_origins=_csv_env(

@@ -1,5 +1,6 @@
 """FastAPI application factory and ASGI entry point."""
 
+import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -11,7 +12,23 @@ from app.core.config import get_settings
 from app.routers import axle
 from app.services.axle_manager import get_axle_manager
 
-DEFAULT_FRONTEND_DIR = Path(__file__).resolve().parents[1] / "static"
+
+def _resolve_default_frontend_dir() -> Path:
+    """解析打包（PyInstaller）或开发环境下的前端静态文件目录。"""
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            p = Path(meipass) / "static"
+            if p.is_dir():
+                return p
+        exe_dir = Path(sys.executable).resolve().parent
+        for candidate in (exe_dir / "static", exe_dir / "_internal" / "static"):
+            if candidate.is_dir():
+                return candidate
+    return Path(__file__).resolve().parents[1] / "static"
+
+
+DEFAULT_FRONTEND_DIR = _resolve_default_frontend_dir()
 
 
 @asynccontextmanager
@@ -42,10 +59,10 @@ def create_app(
     """
     settings = get_settings()
     description = (
-        "基于 FastAPI + Vue 3 的电驱桥控制上位机，集成周立功 USBCAN 真实硬件驱动与 SSE 遥测流。"
+        "株齿2.5T电驱桥下线测试上位机系统，集成周立功 USBCAN 硬件驱动与 SSE 实时遥测流。"
     )
     application = FastAPI(
-        title="电驱桥控制上位机系统",
+        title=settings.app_name,
         version=settings.app_version,
         description=description,
         lifespan=lifespan,

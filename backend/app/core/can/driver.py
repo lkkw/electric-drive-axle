@@ -136,12 +136,30 @@ class ZlgCanDriver:
                 return p
             raise FileNotFoundError(f"未找到指定的 zlgcan.dll: {p}")
 
-        # 默认从 backend/zlgcan_x64/zlgcan.dll 定位
-        default_p = Path(__file__).resolve().parents[3] / "zlgcan_x64" / "zlgcan.dll"
-        if default_p.is_file():
-            return default_p
+        # 打包环境（PyInstaller 冻结环境）
+        if getattr(sys, "frozen", False):
+            candidates = [
+                Path(getattr(sys, "_MEIPASS", "")) / "zlgcan_x64" / "zlgcan.dll",
+                Path(sys.executable).resolve().parent / "zlgcan_x64" / "zlgcan.dll",
+                Path(sys.executable).resolve().parent / "_internal" / "zlgcan_x64" / "zlgcan.dll",
+            ]
+            for candidate in candidates:
+                if candidate.is_file():
+                    return candidate
 
-        raise FileNotFoundError(f"未找到默认周立功动态库 zlgcan.dll，路径: {default_p}")
+        # 开发环境：默认从 backend/zlgcan_x64/zlgcan.dll 定位
+        dev_candidates = [
+            Path(__file__).resolve().parents[3] / "zlgcan_x64" / "zlgcan.dll",
+            Path.cwd() / "zlgcan_x64" / "zlgcan.dll",
+            Path.cwd() / "backend" / "zlgcan_x64" / "zlgcan.dll",
+        ]
+        for dev_p in dev_candidates:
+            if dev_p.is_file():
+                return dev_p
+
+        raise FileNotFoundError(
+            f"未找到默认周立功动态库 zlgcan.dll，已检查路径: {dev_candidates[0]}"
+        )
 
     def _load_dll(self, dll_path: Path) -> ctypes.WinDLL:
         """加载 Windows 64位动态链接库并声明各 C 函数签名。"""

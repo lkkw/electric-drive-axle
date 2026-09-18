@@ -90,7 +90,12 @@ def verify_local_server(base_url: str) -> None:
         request = Request(f"{base_url}{path}", headers={"Accept": expected_content_type})
         with urlopen(request, timeout=5.0) as response:  # noqa: S310 - fixed loopback URL
             content_type = response.headers.get_content_type()
-            response.read()
+            if expected_content_type == "text/event-stream":
+                data = response.readline()
+                if not data:
+                    raise RuntimeError("SSE stream returned empty initial data")
+            else:
+                response.read()
             if response.status != 200 or content_type != expected_content_type:
                 raise RuntimeError(
                     f"Smoke test failed for {path}: "

@@ -42,7 +42,7 @@ const router = createRouter({
 
 router.afterEach((to) => {
   const title = to.meta.title as string | undefined
-  document.title = title ? `${title} · 电驱桥上位机系统` : '电驱桥上位机系统'
+  document.title = title ? `${title} · 株齿 2.5T 电驱桥下线测试上位机` : '株齿 2.5T 电驱桥下线测试上位机'
 })
 
 export default router

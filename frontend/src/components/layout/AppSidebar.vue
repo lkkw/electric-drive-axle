@@ -65,7 +65,7 @@ const navMain = computed(() =>
           <Zap class="size-4" />
         </div>
         <div class="flex flex-1 items-center text-left group-data-[collapsible=icon]:hidden">
-          <span class="truncate font-bold text-sm text-sidebar-foreground">电驱桥测控系统</span>
+          <span class="truncate font-bold text-sm text-sidebar-foreground">EOL 诊断与控制</span>
         </div>
       </div>
     </SidebarHeader>

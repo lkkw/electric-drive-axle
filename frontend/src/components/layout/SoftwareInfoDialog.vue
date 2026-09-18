@@ -78,14 +78,14 @@ const specs: readonly SystemSpec[] = [
           <div>
             <div class="flex items-center gap-2">
               <DialogTitle class="text-base font-bold sm:text-lg">
-                电驱桥综合测控系统
+                株齿 2.5T 电驱桥下线测试上位机
               </DialogTitle>
               <Badge variant="secondary" class="font-mono text-[11px] px-1.5 py-0">
                 v1.0.0
               </Badge>
             </div>
             <DialogDescription class="text-xs text-muted-foreground mt-0.5">
-              新能源电驱桥台架试验、通讯诊断与标定上位机平台
+              株齿 2.5T 电驱桥 EOL 下线测试、通讯诊断与台架标定平台
             </DialogDescription>
           </div>
         </div>
