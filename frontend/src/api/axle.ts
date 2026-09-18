@@ -4,6 +4,8 @@ import type {
   AxleTelemetry,
   CanConnectRequest,
   CanSendRawFrameRequest,
+  CycleTestStartRequest,
+  CycleTestStatus,
   McuFaultCodeItem,
   VcuCommandState,
   VcuCommandUpdateRequest,
@@ -34,6 +36,19 @@ export const clearCanFrames = () =>
 /** 更新上位机设定值 (转矩/转速/使能/模式/档位) */
 export const updateCommand = (update: VcuCommandUpdateRequest) =>
   alova.Post<VcuCommandState>('/axle/command', update)
+
+/** 由后端取得控制权并执行循环工况 */
+export const startCycleTest = (request: CycleTestStartRequest) =>
+  alova.Post<CycleTestStatus>('/axle/cycle-test/start', request)
+
+export const pauseCycleTest = () =>
+  alova.Post<CycleTestStatus>('/axle/cycle-test/pause', {})
+
+export const resumeCycleTest = () =>
+  alova.Post<CycleTestStatus>('/axle/cycle-test/resume', {})
+
+export const stopCycleTest = () =>
+  alova.Post<CycleTestStatus>('/axle/cycle-test/stop', {})
 
 /** 紧急停机 */
 export const emergencyStop = () =>

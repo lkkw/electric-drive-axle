@@ -16,6 +16,8 @@ from app.schemas.axle import (
     AxleTelemetry,
     CanConnectRequest,
     CanSendRawFrameRequest,
+    CycleTestStartRequest,
+    CycleTestStatus,
     McuFaultCodeItem,
     VcuCommandState,
     VcuCommandUpdateRequest,
@@ -171,7 +173,62 @@ async def update_command(
     manager: AxleManagerDep,
 ) -> VcuCommandState:
     """更新上位机发送给 MCU 的目标控制参数，参数在下一次 10ms 周期立即生效。"""
-    return await manager.update_command(update)
+    try:
+        return await manager.update_command(update)
+    except CanDriverError as err:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(err),
+        ) from err
+
+
+@router.post(
+    "/cycle-test/start",
+    response_model=CycleTestStatus,
+    summary="启动后端循环工况测试",
+)
+async def start_cycle_test(
+    request: CycleTestStartRequest,
+    manager: AxleManagerDep,
+) -> CycleTestStatus:
+    """由后端取得控制权，使用单调时钟执行循环步骤。"""
+    try:
+        return await manager.start_cycle_test(request)
+    except CanDriverError as err:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(err)) from err
+
+
+@router.post(
+    "/cycle-test/pause",
+    response_model=CycleTestStatus,
+    summary="暂停循环测试并安全归零",
+)
+async def pause_cycle_test(manager: AxleManagerDep) -> CycleTestStatus:
+    try:
+        return await manager.pause_cycle_test()
+    except CanDriverError as err:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(err)) from err
+
+
+@router.post(
+    "/cycle-test/resume",
+    response_model=CycleTestStatus,
+    summary="继续已暂停的循环测试",
+)
+async def resume_cycle_test(manager: AxleManagerDep) -> CycleTestStatus:
+    try:
+        return await manager.resume_cycle_test()
+    except CanDriverError as err:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(err)) from err
+
+
+@router.post(
+    "/cycle-test/stop",
+    response_model=CycleTestStatus,
+    summary="终止循环测试并释放控制权",
+)
+async def stop_cycle_test(manager: AxleManagerDep) -> CycleTestStatus:
+    return await manager.stop_cycle_test()
 
 
 @router.get(

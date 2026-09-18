@@ -14,6 +14,7 @@ def test_get_axle_status_initial() -> None:
     data = response.json()
     assert "connected" in data
     assert "command" in data
+    assert data["cycle_test"]["status"] in {"idle", "stopped"}
     assert "mcu_1" in data
     assert "mcu_2" in data
     assert "mcu_tbox" in data
@@ -45,6 +46,27 @@ def test_update_axle_command() -> None:
     cmd_data = status_resp.json()["command"]
     assert cmd_data["torque_req"] == 200.0
     assert cmd_data["speed_req"] == 1500
+
+
+def test_cycle_test_start_requires_connected_can() -> None:
+    """未连接硬件时，后端循环任务不得获取控制权。"""
+    response = client.post(
+        "/api/v1/axle/cycle-test/start",
+        json={
+            "total_loops": 1,
+            "steps": [
+                {
+                    "id": "forward",
+                    "name": "正转",
+                    "gear": 1,
+                    "target_speed": 500,
+                    "duration_seconds": 1,
+                }
+            ],
+        },
+    )
+    assert response.status_code == 409
+    assert "CAN 未连接" in response.json()["detail"]
 
 
 def test_update_safety_config() -> None:

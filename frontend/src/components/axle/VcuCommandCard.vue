@@ -4,6 +4,7 @@ import { AlertOctagonIcon, SendIcon } from "@lucide/vue";
 import { toast } from "vue-sonner";
 
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import {
@@ -32,6 +33,10 @@ import {
 
 const axleStore = useAxleStore();
 const cycleTest = useCycleTest();
+const activeTab = ref("manual");
+const isManualLocked = computed(
+  () => cycleTest.isRunning.value || cycleTest.isPaused.value,
+);
 const SELECTABLE_GEAR_IDS = [1, 2, 3, 4] as const;
 const TARGET_INPUT_ID = "motor-target-value";
 
@@ -46,6 +51,10 @@ const form = reactive({
 
 // 目标值编辑状态：编辑期间不让实时推送覆盖尚未下发的模式和目标值。
 const isTargetEditing = ref(false);
+
+watch(isManualLocked, (locked) => {
+  if (locked) activeTab.value = "cycle";
+});
 
 // 范围极值常量
 const TORQUE_MIN = -3000.0;
@@ -119,6 +128,7 @@ async function handleApplyTarget() {
   if (
     !axleStore.isConnected ||
     axleStore.loading ||
+    isManualLocked.value ||
     isTargetInvalid.value
   ) {
     return;
@@ -147,7 +157,7 @@ async function handleApplyTarget() {
 
 /** 切换使能状态（带防飞车保护） */
 async function handleToggleEnable() {
-  if (!axleStore.isConnected || axleStore.loading) {
+  if (!axleStore.isConnected || axleStore.loading || isManualLocked.value) {
     return;
   }
 
@@ -188,7 +198,7 @@ async function handleSetGear(value: unknown) {
   if (!SELECTABLE_GEAR_IDS.some((gearId) => gearId === gear)) {
     return;
   }
-  if (!axleStore.isConnected || axleStore.loading) {
+  if (!axleStore.isConnected || axleStore.loading || isManualLocked.value) {
     return;
   }
 
@@ -215,7 +225,7 @@ async function handleSetMode(value: unknown) {
   if (mode !== 1 && mode !== 3) {
     return;
   }
-  if (!axleStore.isConnected || axleStore.loading) {
+  if (!axleStore.isConnected || axleStore.loading || isManualLocked.value) {
     return;
   }
 
@@ -247,7 +257,7 @@ async function handleSetMode(value: unknown) {
 
 /** 主动放电只提交自身状态，避免顺带下发尚未确认的目标值。 */
 async function handleToggleDischarge() {
-  if (!axleStore.isConnected || axleStore.loading) {
+  if (!axleStore.isConnected || axleStore.loading || isManualLocked.value) {
     return;
   }
 
@@ -270,7 +280,7 @@ async function handleToggleDischarge() {
 
 /** 一键紧急停机 */
 async function handleEmergencyStop() {
-  if (!axleStore.isConnected || axleStore.loading) {
+  if (!axleStore.isConnected) {
     return;
   }
 
@@ -288,10 +298,6 @@ async function handleEmergencyStop() {
   form.gear_sts = 3; // N
   form.active_discharge = 0;
 
-  if (cycleTest.isRunning.value || cycleTest.isPaused.value) {
-    cycleTest.stopTest("紧急停机已触发，工况测试安全中止");
-  }
-
   try {
     await axleStore.triggerEmergencyStop();
     syncTargetFromCommand(axleStore.telemetry.command);
@@ -308,7 +314,7 @@ async function handleEmergencyStop() {
 </script>
 
 <template>
-  <Tabs default-value="manual" class="h-full flex flex-col">
+  <Tabs v-model="activeTab" class="h-full flex flex-col">
     <Card class="border-border shadow-xs h-full flex flex-col">
       <CardHeader class="pb-3 border-b bg-muted/20">
         <div
@@ -321,6 +327,7 @@ async function handleEmergencyStop() {
               <TabsTrigger
                 value="manual"
                 class="h-6.5 px-3 text-xs font-semibold"
+                :disabled="isManualLocked"
               >
                 手动控制
               </TabsTrigger>
@@ -329,11 +336,12 @@ async function handleEmergencyStop() {
                 class="h-6.5 px-3 text-xs font-semibold relative flex items-center gap-1.5"
               >
                 <span>循环测试</span>
-                <span
-                  v-if="cycleTest.isRunning.value"
-                  class="size-1.5 rounded-full bg-success animate-pulse"
-                  title="工况测试运行中"
-                />
+                <Badge
+                  v-if="isManualLocked"
+                  :variant="cycleTest.isPaused.value ? 'warning' : 'success'"
+                >
+                  {{ cycleTest.isPaused.value ? "已暂停" : "运行中" }}
+                </Badge>
               </TabsTrigger>
             </TabsList>
           </div>
@@ -342,7 +350,7 @@ async function handleEmergencyStop() {
             size="sm"
             variant="outline"
             class="w-full shrink-0 justify-center font-semibold px-3 border-destructive/40 bg-destructive/10 text-destructive hover:bg-destructive hover:text-destructive-foreground hover:border-destructive transition-all active:scale-[0.98] sm:w-auto"
-            :disabled="!axleStore.isConnected || axleStore.loading"
+            :disabled="!axleStore.isConnected"
             @click="handleEmergencyStop"
           >
             <AlertOctagonIcon data-icon="inline-start" />
@@ -365,7 +373,7 @@ async function handleEmergencyStop() {
           size="sm"
           :variant="form.mcu_en_cmd === 1 ? 'success' : 'outline'"
           class="h-10 w-full px-4 font-semibold transition-all"
-          :disabled="!axleStore.isConnected || axleStore.loading"
+          :disabled="!axleStore.isConnected || axleStore.loading || isManualLocked"
           @click="handleToggleEnable"
         >
           {{ form.mcu_en_cmd === 1 ? "关闭使能" : "开启使能" }}
@@ -375,7 +383,7 @@ async function handleEmergencyStop() {
           size="sm"
           :variant="form.active_discharge === 1 ? 'warning' : 'outline'"
           class="h-10 w-full px-4 font-semibold transition-all"
-          :disabled="!axleStore.isConnected || axleStore.loading"
+          :disabled="!axleStore.isConnected || axleStore.loading || isManualLocked"
           @click="handleToggleDischarge"
         >
           {{ form.active_discharge === 1 ? "停止放电" : "触发放电" }}
@@ -395,7 +403,7 @@ async function handleEmergencyStop() {
           </div>
           <Select
             :model-value="String(form.gear_sts)"
-            :disabled="!axleStore.isConnected || axleStore.loading"
+            :disabled="!axleStore.isConnected || axleStore.loading || isManualLocked"
             @update:model-value="handleSetGear"
           >
             <SelectTrigger class="h-9 w-full" aria-label="挡位选择">
@@ -427,7 +435,7 @@ async function handleEmergencyStop() {
           </div>
           <Select
             :model-value="String(form.work_mode_req)"
-            :disabled="!axleStore.isConnected || axleStore.loading"
+            :disabled="!axleStore.isConnected || axleStore.loading || isManualLocked"
             @update:model-value="handleSetMode"
           >
             <SelectTrigger class="h-9 w-full" aria-label="工作模式">
@@ -449,7 +457,7 @@ async function handleEmergencyStop() {
         <!-- 根据工作模式展示目标值输入与下发 -->
         <Field
           :data-invalid="isTargetInvalid || undefined"
-          :data-disabled="!axleStore.isConnected || undefined"
+          :data-disabled="!axleStore.isConnected || isManualLocked || undefined"
         >
           <div class="flex items-center justify-between">
             <FieldLabel
@@ -475,7 +483,7 @@ async function handleEmergencyStop() {
               :placeholder="targetConfig.placeholder"
               class="h-9 w-full px-3 pr-12 font-mono font-bold tracking-tight [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-inner-spin-button]:m-0"
               :aria-invalid="isTargetInvalid || undefined"
-              :disabled="!axleStore.isConnected"
+               :disabled="!axleStore.isConnected || isManualLocked"
               @focus="isTargetEditing = true"
               @keydown.enter.prevent="handleApplyTarget"
               @wheel.prevent
@@ -501,7 +509,7 @@ async function handleEmergencyStop() {
           variant="default"
           class="h-10 w-full justify-center px-4 font-semibold shadow-xs transition-all active:scale-[0.99]"
           :disabled="
-            isTargetInvalid || axleStore.loading || !axleStore.isConnected
+            isTargetInvalid || axleStore.loading || !axleStore.isConnected || isManualLocked
           "
           @click="handleApplyTarget"
         >

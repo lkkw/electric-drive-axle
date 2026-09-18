@@ -10,10 +10,12 @@ from app.core.can.constants import (
     VcuMcuEnCmd,
     VcuWorkModeReq,
 )
-from app.core.can.driver import CanRawFrame, ZlgCanDriver
+from app.core.can.driver import CanDriverError, CanRawFrame, ZlgCanDriver
 from app.schemas.axle import (
     AxleSafetyConfig,
     CanConnectRequest,
+    CycleTestStartRequest,
+    CycleTestStep,
     VcuCommandUpdateRequest,
 )
 from app.services.axle_manager import AxleManager
@@ -72,6 +74,168 @@ def test_axle_manager_update_command() -> None:
         assert cmd.work_mode_req == VcuWorkModeReq.TORQUE
         assert cmd.mcu_en_cmd == VcuMcuEnCmd.ENABLE
         assert cmd.gear_sts == VcuGearStatus.D
+
+    asyncio.run(run_test())
+
+
+def test_cycle_test_owns_control_and_uses_safe_pause_stop() -> None:
+    """循环测试运行或暂停时必须拒绝手动覆盖，并统一安全归零。"""
+
+    async def run_test() -> None:
+        manager = AxleManager(driver=create_mock_driver())
+        await manager.connect(CanConnectRequest())
+        request = CycleTestStartRequest(
+            total_loops=1,
+            steps=[
+                CycleTestStep(
+                    id="forward",
+                    name="正转",
+                    gear=1,
+                    target_speed=500,
+                    duration_seconds=10,
+                )
+            ],
+        )
+
+        status = await manager.start_cycle_test(request)
+        assert status.status == "running"
+        assert status.control_owner == "cycle"
+        assert manager.get_telemetry().command.speed_req == 500
+
+        with pytest.raises(CanDriverError, match="手动控制已锁定"):
+            await manager.update_command(VcuCommandUpdateRequest(speed_req=800))
+
+        status = await manager.pause_cycle_test()
+        paused_command = manager.get_telemetry().command
+        assert status.status == "paused"
+        assert paused_command.mcu_en_cmd == 0
+        assert paused_command.work_mode_req == 0
+        assert paused_command.torque_req == 0
+        assert paused_command.speed_req == 0
+        assert paused_command.gear_sts == 3
+
+        status = await manager.resume_cycle_test()
+        assert status.status == "running"
+        assert manager.get_telemetry().command.speed_req == 500
+
+        status = await manager.stop_cycle_test()
+        stopped_command = manager.get_telemetry().command
+        assert status.status == "stopped"
+        assert status.control_owner == "none"
+        assert stopped_command.mcu_en_cmd == 0
+        assert stopped_command.work_mode_req == 0
+        assert stopped_command.torque_req == 0
+        assert stopped_command.speed_req == 0
+        assert stopped_command.gear_sts == 3
+
+        await manager.update_command(VcuCommandUpdateRequest(speed_req=100))
+        assert manager.get_telemetry().command.speed_req == 100
+        await manager.disconnect()
+
+    asyncio.run(run_test())
+
+
+@pytest.mark.parametrize(
+    ("gear", "speed"),
+    [(1, -100), (2, 100), (3, 100)],
+)
+def test_cycle_step_rejects_gear_speed_direction_conflicts(gear: int, speed: int) -> None:
+    """后端必须拒绝绕过前端提交的挡位/转速方向冲突。"""
+    with pytest.raises(ValueError):
+        CycleTestStep(
+            id="invalid",
+            name="无效步骤",
+            gear=gear,  # type: ignore[arg-type]
+            target_speed=speed,
+            duration_seconds=1,
+        )
+
+
+def test_cycle_request_requires_neutral_buffer_between_directions() -> None:
+    """直接从 D 挡切换到 R 挡的步骤序列必须在后端被拒绝。"""
+    with pytest.raises(ValueError, match="N 挡缓冲"):
+        CycleTestStartRequest(
+            steps=[
+                CycleTestStep(
+                    id="forward",
+                    name="正转",
+                    gear=1,
+                    target_speed=100,
+                    duration_seconds=1,
+                ),
+                CycleTestStep(
+                    id="reverse",
+                    name="反转",
+                    gear=2,
+                    target_speed=-100,
+                    duration_seconds=1,
+                ),
+            ]
+        )
+
+
+def test_emergency_stop_cancels_cycle_control_owner() -> None:
+    """急停必须终止后端循环任务并释放控制权。"""
+
+    async def run_test() -> None:
+        manager = AxleManager(driver=create_mock_driver())
+        await manager.connect(CanConnectRequest())
+        await manager.start_cycle_test(
+            CycleTestStartRequest(
+                steps=[
+                    CycleTestStep(
+                        id="forward",
+                        name="正转",
+                        gear=1,
+                        target_speed=500,
+                        duration_seconds=10,
+                    )
+                ]
+            )
+        )
+
+        await manager.emergency_stop()
+        telemetry = manager.get_telemetry()
+        assert telemetry.cycle_test.status == "stopped"
+        assert telemetry.cycle_test.control_owner == "none"
+        assert telemetry.command.mcu_en_cmd == 0
+        assert telemetry.command.work_mode_req == 0
+        await manager.disconnect()
+
+    asyncio.run(run_test())
+
+
+def test_cycle_test_completes_on_server_clock_and_releases_control() -> None:
+    """服务端单调时钟应完成步骤，并在完成后安全停机。"""
+
+    async def run_test() -> None:
+        manager = AxleManager(driver=create_mock_driver())
+        await manager.connect(CanConnectRequest())
+        await manager.start_cycle_test(
+            CycleTestStartRequest(
+                steps=[
+                    CycleTestStep(
+                        id="short",
+                        name="短步骤",
+                        gear=1,
+                        target_speed=300,
+                        duration_seconds=1,
+                    )
+                ]
+            )
+        )
+
+        await asyncio.sleep(1.15)
+        telemetry = manager.get_telemetry()
+        assert telemetry.cycle_test.status == "completed"
+        assert telemetry.cycle_test.control_owner == "none"
+        assert telemetry.cycle_test.total_elapsed_seconds >= 1
+        assert telemetry.command.mcu_en_cmd == 0
+        assert telemetry.command.work_mode_req == 0
+        assert telemetry.command.speed_req == 0
+        assert telemetry.command.torque_req == 0
+        assert telemetry.command.gear_sts == 3
+        await manager.disconnect()
 
     asyncio.run(run_test())
 

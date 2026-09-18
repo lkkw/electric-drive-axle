@@ -9,6 +9,7 @@ Manages:
 
 import asyncio
 import logging
+import math
 import time
 from collections import deque
 from datetime import UTC, datetime
@@ -32,6 +33,8 @@ from app.schemas.axle import (
     CanConnectRequest,
     CanFrameItem,
     CanSendRawFrameRequest,
+    CycleTestStartRequest,
+    CycleTestStatus,
     McuDriveMotor1Telemetry,
     McuDriveMotor2Telemetry,
     McuTboxTelemetry,
@@ -66,6 +69,12 @@ class AxleManager:
 
         # 控制指令状态 (VCU_11 发送内容)
         self._command = VcuCommandState()
+        self._cycle_status = CycleTestStatus()
+        self._cycle_config: CycleTestStartRequest | None = None
+        self._cycle_task: asyncio.Task[None] | None = None
+        self._cycle_generation = 0
+        self._cycle_step_remaining = 0.0
+        self._cycle_elapsed = 0.0
 
         # 遥测反馈状态
         self._mcu_1 = McuDriveMotor1Telemetry()
@@ -212,6 +221,7 @@ class AxleManager:
         # 先把控制量切换到安全值，让既有 10 ms 循环连续发送两帧。
         # 这样既保留 VCU_Life 连续性，也避免停掉循环后再额外等待一次底层发送调用。
         async with self._lock:
+            self._finish_cycle_locked("stopped")
             should_drain_shutdown_frames = self._connected and self._tx_task is not None
             self._disconnecting = should_drain_shutdown_frames
             self._command.torque_req = 0.0
@@ -335,6 +345,7 @@ class AxleManager:
     async def _disconnect_internal(self) -> None:
         """内部断开流程 (需在锁保护下调用，仅用于 connect 中的重连场景)。"""
         self._is_transmitting = False
+        self._finish_cycle_locked("stopped")
         self._connected = False
         self._mcu_1_last_rx_timestamp = None
         self._mcu_2_last_rx_timestamp = None
@@ -351,6 +362,213 @@ class AxleManager:
 
         await self._cleanup_hardware()
 
+    def _set_safe_command_locked(self) -> None:
+        """在状态锁内写入统一的停机命令快照。"""
+        self._command.torque_req = 0.0
+        self._command.speed_req = 0
+        self._command.acc_position = 0.0
+        self._command.work_mode_req = 0
+        self._command.mcu_en_cmd = 0
+        self._command.gear_sts = 3
+        self._command.active_discharge = 0
+
+    def _apply_update_locked(self, update: VcuCommandUpdateRequest) -> None:
+        """在状态锁内合并一组已通过 Pydantic 校验的控制字段。"""
+        for field_name in (
+            "torque_req",
+            "speed_req",
+            "acc_position",
+            "work_mode_req",
+            "mcu_en_cmd",
+            "hand_brk_sts",
+            "brk_sts",
+            "abs_work_sts",
+            "gear_sts",
+            "active_discharge",
+        ):
+            value = getattr(update, field_name)
+            if value is not None:
+                setattr(self._command, field_name, value)
+
+    def _apply_cycle_step_locked(self) -> None:
+        """在状态锁内将当前循环步骤转换为完整控制命令。"""
+        if self._cycle_config is None:
+            raise CanDriverError("循环测试配置丢失。")
+        step = self._cycle_config.steps[self._cycle_status.current_step_index]
+        self._cycle_status.current_step_name = step.name
+        self._cycle_status.current_step_gear = step.gear
+        self._cycle_status.current_step_target_speed = step.target_speed
+        self._cycle_status.current_step_duration_seconds = step.duration_seconds
+        self._command.torque_req = 0.0
+        self._command.speed_req = step.target_speed
+        self._command.acc_position = 0.0
+        self._command.work_mode_req = 3
+        self._command.mcu_en_cmd = 1
+        self._command.gear_sts = step.gear
+        self._command.active_discharge = 0
+
+    def _finish_cycle_locked(
+        self,
+        status: str,
+        *,
+        error: str | None = None,
+    ) -> None:
+        """终止循环任务并统一进入禁用、归零、N 挡状态。"""
+        self._cycle_generation += 1
+        task = self._cycle_task
+        self._cycle_task = None
+        if task is not None and task is not asyncio.current_task() and not task.done():
+            task.cancel()
+        self._set_safe_command_locked()
+        self._cycle_status.status = status  # type: ignore[assignment]
+        self._cycle_status.control_owner = "none"
+        self._cycle_status.step_remaining_seconds = 0
+        self._cycle_status.last_error = error
+
+    async def start_cycle_test(
+        self,
+        request: CycleTestStartRequest,
+    ) -> CycleTestStatus:
+        """由后端取得控制权并启动单一循环测试状态机。"""
+        async with self._lock:
+            if not self._connected or not self._is_transmitting:
+                raise CanDriverError("CAN 未连接，无法启动循环测试。")
+            if self._disconnecting:
+                raise CanDriverError("设备正在停止通信，无法启动循环测试。")
+            if self._is_emergency_locked:
+                raise CanDriverError("系统处于急停锁定状态，请先完成复位。")
+            if self._cycle_status.status in {"running", "paused"}:
+                raise CanDriverError("已有循环测试正在执行。")
+
+            self._cycle_generation += 1
+            generation = self._cycle_generation
+            self._cycle_config = request.model_copy(deep=True)
+            first_step = self._cycle_config.steps[0]
+            self._cycle_step_remaining = float(first_step.duration_seconds)
+            self._cycle_elapsed = 0.0
+            self._cycle_status = CycleTestStatus(
+                status="running",
+                control_owner="cycle",
+                total_loops=request.total_loops,
+                current_loop=1,
+                current_step_index=0,
+                total_steps=len(request.steps),
+                planned_total_seconds=(
+                    sum(step.duration_seconds for step in request.steps) * request.total_loops
+                ),
+                step_remaining_seconds=first_step.duration_seconds,
+                total_elapsed_seconds=0,
+            )
+            self._apply_cycle_step_locked()
+            self._cycle_task = asyncio.create_task(
+                self._cycle_loop(generation),
+                name="axle_cycle_test",
+            )
+            result = self._cycle_status.model_copy()
+
+        self._broadcast_telemetry()
+        return result
+
+    async def pause_cycle_test(self) -> CycleTestStatus:
+        """暂停循环计时并立即写入完整安全命令。"""
+        async with self._lock:
+            if self._cycle_status.status != "running":
+                raise CanDriverError("当前没有可暂停的循环测试。")
+            self._cycle_status.status = "paused"
+            self._set_safe_command_locked()
+            result = self._cycle_status.model_copy()
+        self._broadcast_telemetry()
+        return result
+
+    async def resume_cycle_test(self) -> CycleTestStatus:
+        """重新下发当前步骤并继续后端计时。"""
+        async with self._lock:
+            if self._cycle_status.status != "paused":
+                raise CanDriverError("当前没有可继续的循环测试。")
+            if not self._connected or self._is_emergency_locked:
+                self._finish_cycle_locked("stopped", error="CAN 已断开或系统处于急停锁定状态。")
+                raise CanDriverError("CAN 已断开或系统处于急停锁定状态。")
+            self._apply_cycle_step_locked()
+            self._cycle_status.status = "running"
+            result = self._cycle_status.model_copy()
+        self._broadcast_telemetry()
+        return result
+
+    async def stop_cycle_test(self) -> CycleTestStatus:
+        """主动终止循环测试并释放控制权。"""
+        async with self._lock:
+            self._finish_cycle_locked("stopped")
+            result = self._cycle_status.model_copy()
+        self._broadcast_telemetry()
+        return result
+
+    async def _cycle_loop(self, generation: int) -> None:
+        """使用服务端单调时钟驱动循环，不受浏览器后台节流影响。"""
+        last_tick = time.monotonic()
+        last_visible_remaining = self._cycle_status.step_remaining_seconds
+        try:
+            while True:
+                await asyncio.sleep(0.1)
+                should_broadcast = False
+                async with self._lock:
+                    if generation != self._cycle_generation:
+                        return
+                    if self._cycle_status.status == "paused":
+                        last_tick = time.monotonic()
+                        continue
+                    if self._cycle_status.status != "running":
+                        return
+
+                    now = time.monotonic()
+                    elapsed = max(0.0, now - last_tick)
+                    last_tick = now
+                    self._cycle_step_remaining = max(
+                        0.0,
+                        self._cycle_step_remaining - elapsed,
+                    )
+                    self._cycle_elapsed += elapsed
+                    self._cycle_status.step_remaining_seconds = math.ceil(
+                        self._cycle_step_remaining
+                    )
+                    self._cycle_status.total_elapsed_seconds = int(self._cycle_elapsed)
+
+                    if self._cycle_status.step_remaining_seconds != last_visible_remaining:
+                        last_visible_remaining = self._cycle_status.step_remaining_seconds
+                        should_broadcast = True
+
+                    if self._cycle_step_remaining <= 0:
+                        if self._cycle_config is None:
+                            raise CanDriverError("循环测试配置丢失。")
+                        next_index = self._cycle_status.current_step_index + 1
+                        if next_index >= len(self._cycle_config.steps):
+                            if self._cycle_status.current_loop >= self._cycle_status.total_loops:
+                                self._finish_cycle_locked("completed")
+                                should_broadcast = True
+                            else:
+                                self._cycle_status.current_loop += 1
+                                self._cycle_status.current_step_index = 0
+                        else:
+                            self._cycle_status.current_step_index = next_index
+
+                        if self._cycle_status.status == "running":
+                            step = self._cycle_config.steps[self._cycle_status.current_step_index]
+                            self._cycle_step_remaining = float(step.duration_seconds)
+                            self._cycle_status.step_remaining_seconds = step.duration_seconds
+                            last_visible_remaining = step.duration_seconds
+                            self._apply_cycle_step_locked()
+                            should_broadcast = True
+
+                if should_broadcast:
+                    self._broadcast_telemetry()
+        except asyncio.CancelledError:
+            return
+        except Exception as err:
+            logger.exception("循环测试状态机异常: %s", err)
+            async with self._lock:
+                if generation == self._cycle_generation:
+                    self._finish_cycle_locked("error", error=str(err))
+            self._broadcast_telemetry()
+
     async def update_command(self, update: VcuCommandUpdateRequest) -> VcuCommandState:
         """更新 VCU 控制设定值。
 
@@ -360,6 +578,10 @@ class AxleManager:
         async with self._lock:
             if self._disconnecting:
                 raise CanDriverError("设备正在停止通信，暂不接受新的控制指令。")
+            if self._cycle_status.status in {"running", "paused"}:
+                raise CanDriverError(
+                    "循环测试已取得控制权，手动控制已锁定。请先终止循环测试，或使用急停接口。"
+                )
 
             # 急停互锁保护：急停状态下禁止使能或写入非零控制量
             if self._is_emergency_locked:
@@ -374,26 +596,7 @@ class AxleManager:
                         "请先调用 /emergency-reset 复位后再操作。"
                     )
 
-            if update.torque_req is not None:
-                self._command.torque_req = update.torque_req
-            if update.speed_req is not None:
-                self._command.speed_req = update.speed_req
-            if update.acc_position is not None:
-                self._command.acc_position = update.acc_position
-            if update.work_mode_req is not None:
-                self._command.work_mode_req = update.work_mode_req
-            if update.mcu_en_cmd is not None:
-                self._command.mcu_en_cmd = update.mcu_en_cmd
-            if update.hand_brk_sts is not None:
-                self._command.hand_brk_sts = update.hand_brk_sts
-            if update.brk_sts is not None:
-                self._command.brk_sts = update.brk_sts
-            if update.abs_work_sts is not None:
-                self._command.abs_work_sts = update.abs_work_sts
-            if update.gear_sts is not None:
-                self._command.gear_sts = update.gear_sts
-            if update.active_discharge is not None:
-                self._command.active_discharge = update.active_discharge
+            self._apply_update_locked(update)
 
             return self._command.model_copy()
 
@@ -403,13 +606,8 @@ class AxleManager:
         立即将使能置 0、目标转矩/转速/油门开度归零、挂入空挡，并立即强制发送一帧控制报文。
         """
         async with self._lock:
+            self._finish_cycle_locked("stopped", error="急停已触发。")
             self._is_emergency_locked = True
-            self._command.mcu_en_cmd = 0
-            self._command.torque_req = 0.0
-            self._command.speed_req = 0
-            self._command.acc_position = 0.0
-            self._command.gear_sts = 3  # 空挡 N
-            self._command.active_discharge = 0
 
             # 如果当前通道有效，立即同步下发紧急制动帧
             if self._connected:
@@ -445,7 +643,10 @@ class AxleManager:
                             logger.error("紧急停机报文下发失败 (通道 %d): %s", ch, err)
 
             logger.warning("已触发紧急停机: 使能已关闭，目标转矩/转速归零！")
-            return self._command.model_copy()
+            result = self._command.model_copy()
+
+        self._broadcast_telemetry()
+        return result
 
     async def emergency_reset(self) -> VcuCommandState:
         """复位急停互锁状态 (Emergency Reset)。
@@ -596,6 +797,11 @@ class AxleManager:
         async with self._lock:
             if not self._connected:
                 raise CanDriverError("USBCAN 硬件未连接，无法下发报文。")
+            if (
+                self._cycle_status.status in {"running", "paused"}
+                and request.can_id == CAN_ID_VCU_11
+            ):
+                raise CanDriverError("循环测试运行期间禁止手动下发 VCU_11 (0x258) 控制帧。")
 
             channels_to_use = [0, 1] if self._channel == -1 else [self._channel]
             valid_channels = [ch for ch in channels_to_use if self._driver.is_channel_open(ch)]
@@ -667,6 +873,7 @@ class AxleManager:
             channel=self._channel,
             baud_rate=self._baud_rate,
             command=self._command.model_copy(),
+            cycle_test=self._cycle_status.model_copy(),
             mcu_1=self._mcu_1.model_copy(),
             mcu_1_last_rx_timestamp=self._mcu_1_last_rx_timestamp,
             mcu_2=self._mcu_2.model_copy(),

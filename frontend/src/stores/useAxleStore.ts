@@ -8,13 +8,18 @@ import {
   emergencyStop,
   getAxleStatus,
   getAxleStreamUrl,
+  pauseCycleTest,
+  resumeCycleTest,
   sendRawCanFrame,
+  startCycleTest,
+  stopCycleTest,
   updateCommand,
 } from '@/api/axle'
 import type {
   AxleTelemetry,
   CanConnectRequest,
   CanSendRawFrameRequest,
+  CycleTestStartRequest,
   VcuCommandUpdateRequest,
 } from '@/types/axle'
 
@@ -34,6 +39,22 @@ const createInitialTelemetry = (): AxleTelemetry => ({
     gear_sts: 3,
     active_discharge: 0,
     life: 0,
+  },
+  cycle_test: {
+    status: 'idle',
+    control_owner: 'none',
+    total_loops: 1,
+    current_loop: 1,
+    current_step_index: 0,
+    total_steps: 0,
+    current_step_name: '',
+    current_step_gear: 3,
+    current_step_target_speed: 0,
+    current_step_duration_seconds: 0,
+    planned_total_seconds: 0,
+    step_remaining_seconds: 0,
+    total_elapsed_seconds: 0,
+    last_error: null,
   },
   mcu_1: {
     mcu_dc_main_wire_volt: 0,
@@ -96,6 +117,7 @@ export interface HistoryPoint {
 export const useAxleStore = defineStore('axle', () => {
   const telemetry = ref<AxleTelemetry>(createInitialTelemetry())
   const loading = ref<boolean>(false)
+  const cycleLoading = ref<boolean>(false)
   const error = ref<string | null>(null)
   const sseConnected = ref<boolean>(false)
 
@@ -222,6 +244,46 @@ export const useAxleStore = defineStore('axle', () => {
     }
   }
 
+  async function runCycleTest(request: CycleTestStartRequest) {
+    cycleLoading.value = true
+    error.value = null
+    try {
+      telemetry.value.cycle_test = await startCycleTest(request).send()
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : '启动循环测试异常'
+      throw err
+    } finally {
+      cycleLoading.value = false
+    }
+  }
+
+  async function pauseCycle() {
+    cycleLoading.value = true
+    try {
+      telemetry.value.cycle_test = await pauseCycleTest().send()
+    } finally {
+      cycleLoading.value = false
+    }
+  }
+
+  async function resumeCycle() {
+    cycleLoading.value = true
+    try {
+      telemetry.value.cycle_test = await resumeCycleTest().send()
+    } finally {
+      cycleLoading.value = false
+    }
+  }
+
+  async function stopCycle() {
+    cycleLoading.value = true
+    try {
+      telemetry.value.cycle_test = await stopCycleTest().send()
+    } finally {
+      cycleLoading.value = false
+    }
+  }
+
   /** 紧急停机 */
   async function triggerEmergencyStop() {
     loading.value = true
@@ -229,6 +291,7 @@ export const useAxleStore = defineStore('axle', () => {
     try {
       const updated = await emergencyStop().send()
       telemetry.value.command = updated
+      await refreshStatus()
     } catch (err) {
       error.value = err instanceof Error ? err.message : '紧急停机异常'
       throw err
@@ -275,6 +338,7 @@ export const useAxleStore = defineStore('axle', () => {
   return {
     telemetry,
     loading,
+    cycleLoading,
     error,
     sseConnected,
     historySeries,
@@ -285,6 +349,10 @@ export const useAxleStore = defineStore('axle', () => {
     connect,
     disconnect,
     sendCommand,
+    runCycleTest,
+    pauseCycle,
+    resumeCycle,
+    stopCycle,
     triggerEmergencyStop,
     refreshStatus,
     sendRawFrame,

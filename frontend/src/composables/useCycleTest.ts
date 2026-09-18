@@ -1,13 +1,15 @@
-import { computed, getCurrentInstance, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, ref } from 'vue'
 import { toast } from 'vue-sonner'
+
 import { useAxleStore } from '@/stores/useAxleStore'
+import type { CycleGear, CycleTestStartRequest } from '@/types/axle'
 
 export interface CycleStep {
   id: string
   name: string
-  gear: number // 1: D, 2: R, 3: N
-  targetSpeed: number // RPM (-12000 ~ 12000)
-  durationSeconds: number // 持续秒数
+  gear: CycleGear
+  targetSpeed: number
+  durationSeconds: number
 }
 
 export const DEFAULT_CYCLE_STEPS: readonly CycleStep[] = [
@@ -17,69 +19,75 @@ export const DEFAULT_CYCLE_STEPS: readonly CycleStep[] = [
   { id: 'step-4', name: '换向缓冲', gear: 3, targetSpeed: 0, durationSeconds: 5 },
 ]
 
-export type CycleTestStatus = 'idle' | 'running' | 'paused' | 'stopped' | 'completed'
-
 let nextStepId = 100
 
 export function useCycleTest() {
   const axleStore = useAxleStore()
+  const totalLoops = ref(1)
+  const steps = ref<CycleStep[]>(DEFAULT_CYCLE_STEPS.map((step) => ({ ...step })))
 
-  const status = ref<CycleTestStatus>('idle')
-  const totalLoops = ref<number>(1) // 默认1圈，即单次循环完成即停止
-  const currentLoop = ref<number>(1)
-  const currentStepIndex = ref<number>(0)
-  const stepRemainingSeconds = ref<number>(0)
-  const totalElapsedSeconds = ref<number>(0)
-
-  // 初始化步骤列表（深拷贝默认步骤）
-  const steps = ref<CycleStep[]>(
-    DEFAULT_CYCLE_STEPS.map((s) => ({ ...s })),
-  )
-
-  let timer: ReturnType<typeof setInterval> | undefined
-
+  const status = computed(() => axleStore.telemetry.cycle_test.status)
   const isRunning = computed(() => status.value === 'running')
   const isPaused = computed(() => status.value === 'paused')
-  const isIdle = computed(() => status.value === 'idle' || status.value === 'stopped' || status.value === 'completed')
-
-  const currentStep = computed<CycleStep | undefined>(() => steps.value[currentStepIndex.value])
-
-  const singleLoopTotalDuration = computed(() =>
-    steps.value.reduce((sum, s) => sum + Math.max(1, s.durationSeconds), 0),
+  const isIdle = computed(() => !isRunning.value && !isPaused.value)
+  const currentLoop = computed(() => axleStore.telemetry.cycle_test.current_loop)
+  const currentStepIndex = computed(() => axleStore.telemetry.cycle_test.current_step_index)
+  const stepRemainingSeconds = computed(() => axleStore.telemetry.cycle_test.step_remaining_seconds)
+  const totalElapsedSeconds = computed(() => axleStore.telemetry.cycle_test.total_elapsed_seconds)
+  const currentStep = computed<CycleStep | undefined>(() => {
+    const backendStatus = axleStore.telemetry.cycle_test
+    if (backendStatus.control_owner === 'cycle' || ['completed', 'stopped', 'error'].includes(backendStatus.status)) {
+      return {
+        id: `backend-step-${backendStatus.current_step_index}`,
+        name: backendStatus.current_step_name,
+        gear: backendStatus.current_step_gear,
+        targetSpeed: backendStatus.current_step_target_speed,
+        durationSeconds: backendStatus.current_step_duration_seconds,
+      }
+    }
+    return steps.value[currentStepIndex.value]
+  })
+  const executionTotalLoops = computed(() =>
+    isRunning.value || isPaused.value || status.value === 'completed'
+      ? axleStore.telemetry.cycle_test.total_loops
+      : totalLoops.value,
+  )
+  const executionTotalSteps = computed(() =>
+    isRunning.value || isPaused.value || status.value === 'completed'
+      ? axleStore.telemetry.cycle_test.total_steps
+      : steps.value.length,
   )
 
+  const singleLoopTotalDuration = computed(() =>
+    steps.value.reduce((sum, step) => sum + Math.max(1, step.durationSeconds), 0),
+  )
   const stepProgressPercent = computed(() => {
     if (!currentStep.value || currentStep.value.durationSeconds <= 0) return 0
     const elapsed = currentStep.value.durationSeconds - stepRemainingSeconds.value
     return Math.min(100, Math.max(0, Math.round((elapsed / currentStep.value.durationSeconds) * 100)))
   })
-
   const overallProgressPercent = computed(() => {
-    if (totalLoops.value === 0) return 0 // 无限循环不显示总进度
-    const totalDuration = singleLoopTotalDuration.value * totalLoops.value
+    const backendTotal = axleStore.telemetry.cycle_test.planned_total_seconds
+    const totalDuration = isRunning.value || isPaused.value || status.value === 'completed'
+      ? backendTotal
+      : singleLoopTotalDuration.value * executionTotalLoops.value
     if (totalDuration <= 0) return 0
     return Math.min(100, Math.max(0, Math.round((totalElapsedSeconds.value / totalDuration) * 100)))
   })
 
   function addStep() {
-    const lastStep = steps.value[steps.value.length - 1]
-    const isLastD = lastStep?.gear === 1
-    const newGear = isLastD ? 2 : 1
-    steps.value.push({
+    const lastStep = steps.value.at(-1)
+    const gear: CycleGear = lastStep?.gear === 1 ? 2 : 1
+    const newStep: CycleStep = {
       id: `step-${nextStepId++}`,
-      name: newGear === 1 ? '正转运行' : '反转运行',
-      gear: newGear,
-      targetSpeed: newGear === 1 ? 1000 : -1000,
+      name: gear === 1 ? '正转运行' : '反转运行',
+      gear,
+      targetSpeed: gear === 1 ? 1000 : -1000,
       durationSeconds: 60,
-    })
-  }
-
-  function resetToDefault() {
-    steps.value = DEFAULT_CYCLE_STEPS.map((s) => ({ ...s, id: `step-${nextStepId++}` }))
-    totalLoops.value = 1
-    resetTest()
-    toast.success('已恢复为默认工况配置', {
-      description: '正转 60s → 缓冲 5s → 反转 60s → 缓冲 5s (1圈)',
+    }
+    steps.value.push(newStep)
+    toast.success('已添加工况步骤', {
+      description: `步骤 ${steps.value.length}：${newStep.name}`,
     })
   }
 
@@ -91,194 +99,119 @@ export function useCycleTest() {
     steps.value.splice(index, 1)
   }
 
-  async function executeCurrentStep() {
-    const step = currentStep.value
-    if (!step) return
-
-    try {
-      // 1. 确保 MCU 处于使能状态与速度模式 (work_mode_req: 3)
-      await axleStore.sendCommand({
-        mcu_en_cmd: 1,
-        work_mode_req: 3,
-        gear_sts: step.gear,
-        speed_req: step.targetSpeed,
-        torque_req: 0,
-      })
-    } catch (error) {
-      stopTest('指令下发失败，安全中止测试')
-      toast.error('工况指令下发失败', {
-        description: error instanceof Error ? error.message : '请检查通信链路',
-      })
-    }
+  function resetTest() {
+    totalLoops.value = 1
   }
 
-  function onTick() {
-    totalElapsedSeconds.value++
-    stepRemainingSeconds.value--
+  function resetToDefault() {
+    steps.value = DEFAULT_CYCLE_STEPS.map((step) => ({
+      ...step,
+      id: `step-${nextStepId++}`,
+    }))
+    totalLoops.value = 1
+    toast.success('已恢复默认工况配置')
+  }
 
-    if (stepRemainingSeconds.value <= 0) {
-      // 当前步骤结束，进入下一步
-      if (currentStepIndex.value < steps.value.length - 1) {
-        currentStepIndex.value++
-        stepRemainingSeconds.value = currentStep.value?.durationSeconds ?? 0
-        executeCurrentStep()
-      } else {
-        // 本圈循环结束
-        if (totalLoops.value === 0 || currentLoop.value < totalLoops.value) {
-          // 继续下一圈循环
-          currentLoop.value++
-          currentStepIndex.value = 0
-          stepRemainingSeconds.value = currentStep.value?.durationSeconds ?? 0
-          executeCurrentStep()
-        } else {
-          // 全部循环执行完毕
-          completeTest()
-        }
+  function buildRequest(): CycleTestStartRequest | null {
+    if (!Number.isInteger(totalLoops.value) || totalLoops.value < 1 || totalLoops.value > 999) {
+      toast.warning('循环圈数必须是 1 至 999 的整数')
+      return null
+    }
+    for (const [index, step] of steps.value.entries()) {
+      const prefix = `步骤 ${index + 1}`
+      if (!step.name.trim()) {
+        toast.warning(`${prefix} 的名称不能为空`)
+        return null
       }
+      if (!Number.isInteger(step.durationSeconds) || step.durationSeconds < 1 || step.durationSeconds > 3600) {
+        toast.warning(`${prefix} 的时长必须是 1 至 3600 秒的整数`)
+        return null
+      }
+      if (!Number.isInteger(step.targetSpeed) || Math.abs(step.targetSpeed) > 12000) {
+        toast.warning(`${prefix} 的目标转速必须是 -12000 至 12000 RPM 的整数`)
+        return null
+      }
+      if ((step.gear === 1 && step.targetSpeed < 0) || (step.gear === 2 && step.targetSpeed > 0)) {
+        toast.warning(`${prefix} 的挡位与转速方向不一致`)
+        return null
+      }
+      if (step.gear === 3 && step.targetSpeed !== 0) {
+        toast.warning(`${prefix} 为 N 挡时目标转速必须为 0`)
+        return null
+      }
+    }
+    const adjacentPairs = steps.value.slice(1).map((step, index) => [steps.value[index], step] as const)
+    if (totalLoops.value > 1 && steps.value.length > 1) {
+      adjacentPairs.push([steps.value.at(-1)!, steps.value[0]])
+    }
+    if (adjacentPairs.some(([previous, current]) =>
+      (previous.gear === 1 && current.gear === 2)
+      || (previous.gear === 2 && current.gear === 1))) {
+      toast.warning('正反转切换之间必须配置 N 挡缓冲步骤')
+      return null
+    }
+    return {
+      total_loops: totalLoops.value,
+      steps: steps.value.map((step) => ({
+        id: step.id,
+        name: step.name.trim(),
+        gear: step.gear,
+        target_speed: step.targetSpeed,
+        duration_seconds: step.durationSeconds,
+      })),
     }
   }
 
   async function startTest() {
     if (!axleStore.isConnected) {
-      toast.error('CAN 未连接，无法启动自动化测试')
+      toast.error('CAN 未连接，无法启动循环测试')
       return
     }
-    if (steps.value.length === 0) {
-      toast.warning('请至少添加一个工况测试步骤')
-      return
+    const request = buildRequest()
+    if (!request) return
+    try {
+      await axleStore.runCycleTest(request)
+      toast.success('循环测试已由后端启动', {
+        description: `共 ${request.steps.length} 个步骤，计划循环 ${request.total_loops} 圈`,
+      })
+    } catch (error) {
+      toast.error('循环测试启动失败', {
+        description: error instanceof Error ? error.message : '请检查通信链路',
+      })
     }
-
-    // 校验步骤时长合法性
-    for (const step of steps.value) {
-      if (step.durationSeconds <= 0) {
-        toast.warning(`步骤 "${step.name}" 持续时间必须大于 0 秒`)
-        return
-      }
-    }
-
-    currentLoop.value = 1
-    currentStepIndex.value = 0
-    totalElapsedSeconds.value = 0
-    stepRemainingSeconds.value = steps.value[0].durationSeconds
-    status.value = 'running'
-
-    await executeCurrentStep()
-
-    if (timer) clearInterval(timer)
-    timer = setInterval(onTick, 1000)
-
-    toast.success('自动化工况测试已启动', {
-      description: `共 ${steps.value.length} 个步骤，计划循环 ${totalLoops.value === 0 ? '无限' : totalLoops.value} 圈`,
-    })
   }
 
   async function pauseTest() {
-    if (status.value !== 'running') return
-    if (timer) clearInterval(timer)
-    status.value = 'paused'
-
-    // 安全暂停：将转速归零，挂入空挡缓冲
     try {
-      await axleStore.sendCommand({
-        gear_sts: 3,
-        speed_req: 0,
+      await axleStore.pauseCycle()
+      toast.info('循环测试已暂停，安全命令已写入')
+    } catch (error) {
+      toast.error('暂停循环测试失败', {
+        description: error instanceof Error ? error.message : '请立即使用急停',
       })
-    } catch {
-      // 忽略暂停下发的微小网络抖动
     }
-
-    toast.info('工况测试已暂停', {
-      description: '电机已降速并挂入空挡，点击继续可恢复执行',
-    })
   }
 
   async function resumeTest() {
-    if (status.value !== 'paused') return
-    status.value = 'running'
-    await executeCurrentStep()
-
-    if (timer) clearInterval(timer)
-    timer = setInterval(onTick, 1000)
-
-    toast.success('工况测试已继续')
+    try {
+      await axleStore.resumeCycle()
+      toast.success('循环测试已继续')
+    } catch (error) {
+      toast.error('继续循环测试失败', {
+        description: error instanceof Error ? error.message : '请检查 CAN 和急停状态',
+      })
+    }
   }
 
   async function stopTest(reason?: string) {
-    if (status.value === 'idle' || status.value === 'stopped') return
-    if (timer) clearInterval(timer)
-    status.value = 'stopped'
-
-    // 安全停止：速度归零挂空挡
     try {
-      await axleStore.sendCommand({
-        gear_sts: 3,
-        speed_req: 0,
-        torque_req: 0,
+      await axleStore.stopCycle()
+      toast.info(reason ?? '循环测试已终止，控制权已释放')
+    } catch (error) {
+      toast.error('终止循环测试失败', {
+        description: error instanceof Error ? error.message : '请立即使用急停',
       })
-    } catch {
-      // ignore
     }
-
-    if (reason) {
-      toast.warning(reason)
-    } else {
-      toast.info('工况测试已安全终止')
-    }
-  }
-
-  async function completeTest() {
-    if (timer) clearInterval(timer)
-    status.value = 'completed'
-
-    // 正常完成：速度归零挂空挡
-    try {
-      await axleStore.sendCommand({
-        gear_sts: 3,
-        speed_req: 0,
-      })
-    } catch {
-      // ignore
-    }
-
-    toast.success('🎉 自动化工况循环测试全部完成！', {
-      description: `累计完成 ${currentLoop.value} 圈，总耗时 ${totalElapsedSeconds.value} 秒`,
-      duration: 5000,
-    })
-  }
-
-  function resetTest() {
-    if (timer) clearInterval(timer)
-    status.value = 'idle'
-    currentLoop.value = 1
-    currentStepIndex.value = 0
-    stepRemainingSeconds.value = steps.value[0]?.durationSeconds ?? 0
-    totalElapsedSeconds.value = 0
-  }
-
-  // 安全联锁 1：监听上位机使能与急停。如果外部紧急停机使能断开，必须强制立即打断测试！
-  watch(
-    () => axleStore.telemetry.command.mcu_en_cmd,
-    (en) => {
-      if (en === 0 && (status.value === 'running' || status.value === 'paused')) {
-        stopTest('检测到使能断开或紧急停机，自动化测试已安全中止！')
-      }
-    },
-  )
-
-  // 安全联锁 2：监听 CAN 离线
-  watch(
-    () => axleStore.isConnected,
-    (connected) => {
-      if (!connected && (status.value === 'running' || status.value === 'paused')) {
-        stopTest('CAN 通信断开，自动化测试已安全中止！')
-      }
-    },
-  )
-
-  if (getCurrentInstance()) {
-    onBeforeUnmount(() => {
-      if (timer) clearInterval(timer)
-    })
   }
 
   return {
@@ -291,6 +224,8 @@ export function useCycleTest() {
     currentLoop,
     currentStepIndex,
     currentStep,
+    executionTotalLoops,
+    executionTotalSteps,
     stepRemainingSeconds,
     totalElapsedSeconds,
     singleLoopTotalDuration,

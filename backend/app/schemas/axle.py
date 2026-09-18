@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class CanConnectRequest(BaseModel):
@@ -100,6 +100,68 @@ class VcuCommandState(BaseModel):
     gear_sts: int = 3  # 默认空挡 N
     active_discharge: int = 0  # 默认不放电
     life: int = 0  # 循环计数器 (0~15)
+
+
+class CycleTestStep(BaseModel):
+    """后端循环测试中的单个工况步骤。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1, max_length=64)
+    name: str = Field(min_length=1, max_length=64)
+    gear: Literal[1, 2, 3]
+    target_speed: int = Field(ge=-12000, le=12000)
+    duration_seconds: int = Field(ge=1, le=3600)
+
+    @model_validator(mode="after")
+    def validate_gear_speed_direction(self) -> "CycleTestStep":
+        """挡位和转速方向必须一致，N 挡只允许零转速。"""
+        if self.gear == 1 and self.target_speed < 0:
+            raise ValueError("D 挡目标转速不能为负数。")
+        if self.gear == 2 and self.target_speed > 0:
+            raise ValueError("R 挡目标转速不能为正数。")
+        if self.gear == 3 and self.target_speed != 0:
+            raise ValueError("N 挡目标转速必须为 0。")
+        return self
+
+
+class CycleTestStartRequest(BaseModel):
+    """启动循环测试时提交的完整、不可变工况快照。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    steps: list[CycleTestStep] = Field(min_length=1, max_length=100)
+    total_loops: int = Field(default=1, ge=1, le=999)
+
+    @model_validator(mode="after")
+    def validate_direction_changes_have_neutral_buffer(self) -> "CycleTestStartRequest":
+        """正反转切换必须经过独立 N 挡步骤，包括跨圈边界。"""
+        adjacent_pairs = list(zip(self.steps, self.steps[1:], strict=False))
+        if self.total_loops > 1 and len(self.steps) > 1:
+            adjacent_pairs.append((self.steps[-1], self.steps[0]))
+        for previous, current in adjacent_pairs:
+            if {previous.gear, current.gear} == {1, 2}:
+                raise ValueError("正反转切换之间必须配置 N 挡缓冲步骤。")
+        return self
+
+
+class CycleTestStatus(BaseModel):
+    """由后端维护并通过 REST/SSE 对外发布的循环测试状态。"""
+
+    status: Literal["idle", "running", "paused", "stopped", "completed", "error"] = "idle"
+    control_owner: Literal["none", "cycle"] = "none"
+    total_loops: int = 1
+    current_loop: int = 1
+    current_step_index: int = 0
+    total_steps: int = 0
+    current_step_name: str = ""
+    current_step_gear: Literal[1, 2, 3] = 3
+    current_step_target_speed: int = 0
+    current_step_duration_seconds: int = 0
+    planned_total_seconds: int = 0
+    step_remaining_seconds: int = 0
+    total_elapsed_seconds: int = 0
+    last_error: str | None = None
 
 
 class McuDriveMotor1Telemetry(BaseModel):
@@ -228,6 +290,7 @@ class AxleTelemetry(BaseModel):
     channel: int = 0
     baud_rate: int = 500000
     command: VcuCommandState = Field(default_factory=VcuCommandState)
+    cycle_test: CycleTestStatus = Field(default_factory=CycleTestStatus)
     mcu_1: McuDriveMotor1Telemetry = Field(default_factory=McuDriveMotor1Telemetry)
     # 仅在成功解码 0x35A 后更新，用于判断 MCU 故障反馈是否新鲜。
     mcu_1_last_rx_timestamp: float | None = None

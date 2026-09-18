@@ -37,6 +37,39 @@ export interface VcuCommandState {
   life: number
 }
 
+export type CycleGear = 1 | 2 | 3
+export type CycleTestState = 'idle' | 'running' | 'paused' | 'stopped' | 'completed' | 'error'
+
+export interface CycleTestStepRequest {
+  id: string
+  name: string
+  gear: CycleGear
+  target_speed: number
+  duration_seconds: number
+}
+
+export interface CycleTestStartRequest {
+  steps: CycleTestStepRequest[]
+  total_loops: number
+}
+
+export interface CycleTestStatus {
+  status: CycleTestState
+  control_owner: 'none' | 'cycle'
+  total_loops: number
+  current_loop: number
+  current_step_index: number
+  total_steps: number
+  current_step_name: string
+  current_step_gear: CycleGear
+  current_step_target_speed: number
+  current_step_duration_seconds: number
+  planned_total_seconds: number
+  step_remaining_seconds: number
+  total_elapsed_seconds: number
+  last_error: string | null
+}
+
 export interface McuDriveMotor1Telemetry {
   mcu_dc_main_wire_volt: number
   mcu_dc_main_wire_curr: number
@@ -119,6 +152,7 @@ export interface AxleTelemetry {
   channel: number
   baud_rate: number
   command: VcuCommandState
+  cycle_test: CycleTestStatus
   mcu_1: McuDriveMotor1Telemetry
   mcu_1_last_rx_timestamp: number | null
   mcu_2: McuDriveMotor2Telemetry
@@ -248,4 +282,3 @@ export const MCU_FAULT_MAP: Record<number, McuFaultCodeItem> = Object.fromEntrie
 export function getMcuFaultInfo(rawCode: number): McuFaultCodeItem | undefined {
   return MCU_FAULT_MAP[rawCode]
 }
-
