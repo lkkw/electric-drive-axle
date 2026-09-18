@@ -20,6 +20,9 @@ import {
   FieldGroup,
   FieldLabel,
 } from "@/components/ui/field";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import CycleTestPanel from "@/components/axle/CycleTestPanel.vue";
+import { useCycleTest } from "@/composables/useCycleTest";
 import { useAxleStore } from "@/stores/useAxleStore";
 import {
   GEAR_MAP,
@@ -28,6 +31,7 @@ import {
 } from "@/types/axle";
 
 const axleStore = useAxleStore();
+const cycleTest = useCycleTest();
 const SELECTABLE_GEAR_IDS = [1, 2, 3, 4] as const;
 const TARGET_INPUT_ID = "motor-target-value";
 
@@ -284,6 +288,10 @@ async function handleEmergencyStop() {
   form.gear_sts = 3; // N
   form.active_discharge = 0;
 
+  if (cycleTest.isRunning.value || cycleTest.isPaused.value) {
+    cycleTest.stopTest("紧急停机已触发，工况测试安全中止");
+  }
+
   try {
     await axleStore.triggerEmergencyStop();
     syncTargetFromCommand(axleStore.telemetry.command);
@@ -300,26 +308,55 @@ async function handleEmergencyStop() {
 </script>
 
 <template>
-  <Card class="border-border shadow-xs h-full flex flex-col">
-    <CardHeader class="pb-3 border-b bg-muted/20">
-      <div
-        class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"
-      >
-        <CardTitle class="text-base font-semibold"> 电驱控制 </CardTitle>
-        <Button
-          size="sm"
-          variant="destructive"
-          class="w-full shrink-0 justify-center font-bold tracking-widest sm:w-auto sm:min-w-32"
-          :disabled="!axleStore.isConnected || axleStore.loading"
-          @click="handleEmergencyStop"
+  <Tabs default-value="manual" class="h-full flex flex-col">
+    <Card class="border-border shadow-xs h-full flex flex-col">
+      <CardHeader class="pb-3 border-b bg-muted/20">
+        <div
+          class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between min-h-7"
         >
-          <AlertOctagonIcon data-icon="inline-start" />
-          紧急停机
-        </Button>
-      </div>
-    </CardHeader>
+          <!-- 标题区域替换为手动控制与循环测试 Tabs 切换按钮，最大化节约垂直空间 -->
+          <div class="flex items-center gap-2">
+            <CardTitle class="sr-only">电驱控制</CardTitle>
+            <TabsList class="h-7.5 p-0.5 bg-muted/60 border border-border/50">
+              <TabsTrigger
+                value="manual"
+                class="h-6.5 px-3 text-xs font-semibold"
+              >
+                手动控制
+              </TabsTrigger>
+              <TabsTrigger
+                value="cycle"
+                class="h-6.5 px-3 text-xs font-semibold relative flex items-center gap-1.5"
+              >
+                <span>循环测试</span>
+                <span
+                  v-if="cycleTest.isRunning.value"
+                  class="size-1.5 rounded-full bg-success animate-pulse"
+                  title="工况测试运行中"
+                />
+              </TabsTrigger>
+            </TabsList>
+          </div>
 
-    <CardContent class="p-4 sm:p-5 flex-1 flex flex-col gap-4">
+          <Button
+            size="sm"
+            variant="outline"
+            class="w-full shrink-0 justify-center font-semibold px-3 border-destructive/40 bg-destructive/10 text-destructive hover:bg-destructive hover:text-destructive-foreground hover:border-destructive transition-all active:scale-[0.98] sm:w-auto"
+            :disabled="!axleStore.isConnected || axleStore.loading"
+            @click="handleEmergencyStop"
+          >
+            <AlertOctagonIcon data-icon="inline-start" />
+            <span>紧急停机</span>
+          </Button>
+        </div>
+      </CardHeader>
+
+      <TabsContent
+        value="manual"
+        :force-mount="true"
+        class="data-[state=inactive]:hidden flex-1 flex flex-col m-0"
+      >
+        <CardContent class="p-4 sm:p-5 flex-1 flex flex-col gap-4">
       <!-- 使能与主动放电操作：实际反馈集中展示在 MCU 实时反馈卡片。 -->
       <div
         class="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3 bg-muted/25 rounded-xl border border-border/60"
@@ -427,42 +464,27 @@ async function handleEmergencyStop() {
             </span>
           </div>
 
-          <div class="flex items-center gap-3">
-            <div class="relative flex-1">
-              <Input
-                :id="TARGET_INPUT_ID"
-                v-model.number="form.target_value"
-                type="number"
-                :step="targetConfig.step"
-                :min="targetConfig.min"
-                :max="targetConfig.max"
-                :placeholder="targetConfig.placeholder"
-                class="h-9 w-full px-3 pr-12 font-mono font-bold tracking-tight [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-inner-spin-button]:m-0"
-                :aria-invalid="isTargetInvalid || undefined"
-                :disabled="!axleStore.isConnected"
-                @focus="isTargetEditing = true"
-                @keydown.enter.prevent="handleApplyTarget"
-                @wheel.prevent
-              />
-              <div
-                class="absolute inset-y-0 right-3 flex items-center pointer-events-none text-xs font-semibold text-muted-foreground font-mono"
-              >
-                {{ targetConfig.unit }}
-              </div>
-            </div>
-
-            <Button
-              size="sm"
-              variant="default"
-              class="h-9 min-w-28 shrink-0 justify-center px-4 font-semibold sm:min-w-36"
-              :disabled="
-                isTargetInvalid || axleStore.loading || !axleStore.isConnected
-              "
-              @click="handleApplyTarget"
+          <div class="relative w-full">
+            <Input
+              :id="TARGET_INPUT_ID"
+              v-model.number="form.target_value"
+              type="number"
+              :step="targetConfig.step"
+              :min="targetConfig.min"
+              :max="targetConfig.max"
+              :placeholder="targetConfig.placeholder"
+              class="h-9 w-full px-3 pr-12 font-mono font-bold tracking-tight [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-inner-spin-button]:m-0"
+              :aria-invalid="isTargetInvalid || undefined"
+              :disabled="!axleStore.isConnected"
+              @focus="isTargetEditing = true"
+              @keydown.enter.prevent="handleApplyTarget"
+              @wheel.prevent
+            />
+            <div
+              class="absolute inset-y-0 right-3 flex items-center pointer-events-none text-xs font-semibold text-muted-foreground font-mono"
             >
-              <SendIcon data-icon="inline-start" />
-              {{ targetConfig.actionLabel }}
-            </Button>
+              {{ targetConfig.unit }}
+            </div>
           </div>
 
           <FieldError v-if="isTargetInvalid">
@@ -472,7 +494,33 @@ async function handleEmergencyStop() {
             之间的{{ isTorqueMode ? "数值" : "整数" }}。
           </FieldError>
         </Field>
+
+        <!-- 独立一行的下发按钮 -->
+        <Button
+          size="default"
+          variant="default"
+          class="h-10 w-full justify-center px-4 font-semibold shadow-xs transition-all active:scale-[0.99]"
+          :disabled="
+            isTargetInvalid || axleStore.loading || !axleStore.isConnected
+          "
+          @click="handleApplyTarget"
+        >
+          <SendIcon data-icon="inline-start" />
+          <span>{{ targetConfig.actionLabel }}</span>
+        </Button>
       </FieldGroup>
-    </CardContent>
-  </Card>
+        </CardContent>
+      </TabsContent>
+
+      <TabsContent
+        value="cycle"
+        :force-mount="true"
+        class="data-[state=inactive]:hidden flex-1 flex flex-col m-0"
+      >
+        <CardContent class="p-4 sm:p-5 flex-1 flex flex-col">
+          <CycleTestPanel :cycle="cycleTest" />
+        </CardContent>
+      </TabsContent>
+    </Card>
+  </Tabs>
 </template>

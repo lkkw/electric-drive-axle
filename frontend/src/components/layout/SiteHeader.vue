@@ -16,8 +16,8 @@ const route = useRoute()
 
 // 路由 -> 面包屑文案
 const pageTitles: Record<string, { group: string; page: string }> = {
-  '/': { group: '测控系统', page: 'CAN 通讯诊断' },
-  '/can': { group: '测控系统', page: 'CAN 通讯诊断' },
+  '/': { group: '测控系统', page: 'CAN 通讯控制' },
+  '/can': { group: '测控系统', page: 'CAN 通讯控制' },
   '/axle': { group: '测试台架', page: '电驱桥控制台' },
   '/safety': { group: '安全保护', page: '安全配置' },
 }
