@@ -137,10 +137,10 @@ def test_cycle_test_owns_control_and_uses_safe_pause_stop() -> None:
 
 @pytest.mark.parametrize(
     ("gear", "speed"),
-    [(1, -100), (2, 100), (3, 100)],
+    [(1, -100), (2, -100), (3, 100)],
 )
 def test_cycle_step_rejects_gear_speed_direction_conflicts(gear: int, speed: int) -> None:
-    """后端必须拒绝绕过前端提交的挡位/转速方向冲突。"""
+    """后端必须拒绝绕过前端提交的挡位/转速方向冲突（D 挡与 R 挡均不可为负数）。"""
     with pytest.raises(ValueError):
         CycleTestStep(
             id="invalid",
@@ -167,7 +167,7 @@ def test_cycle_request_requires_neutral_buffer_between_directions() -> None:
                     id="reverse",
                     name="反转",
                     gear=2,
-                    target_speed=-100,
+                    target_speed=100,
                     duration_seconds=1,
                 ),
             ]

@@ -24,7 +24,7 @@ describe('useCycleTest composable', () => {
     expect(cycle.steps.value[1].gear).toBe(3) // N 换向缓冲
     expect(cycle.steps.value[1].targetSpeed).toBe(0)
     expect(cycle.steps.value[2].gear).toBe(2) // R
-    expect(cycle.steps.value[2].targetSpeed).toBe(-1000)
+    expect(cycle.steps.value[2].targetSpeed).toBe(1000)
     expect(cycle.steps.value[3].gear).toBe(3) // N 换向缓冲
     expect(cycle.steps.value[3].targetSpeed).toBe(0)
     expect(cycle.totalLoops.value).toBe(1)
@@ -119,13 +119,13 @@ describe('useCycleTest composable', () => {
     expect(cycle.isIdle.value).toBe(true)
   })
 
-  it('拒绝挡位与转速方向冲突的配置', async () => {
+  it('拒绝非法负转速配置', async () => {
     const store = useAxleStore()
     store.telemetry.connected = true
     const runCycleSpy = vi.spyOn(store, 'runCycleTest')
     const cycle = useCycleTest()
     cycle.steps.value = [
-      { id: 'invalid', name: '反转', gear: 2, targetSpeed: 500, durationSeconds: 2 },
+      { id: 'invalid', name: '反转', gear: 2, targetSpeed: -500, durationSeconds: 2 },
     ]
 
     await cycle.startTest()

@@ -61,12 +61,9 @@ function handleGearChange(step: CycleStep, newGear: unknown) {
   if (gear === 3) {
     // 空挡缓冲，转速强制为 0
     step.targetSpeed = 0
-  } else if (gear === 1 && step.targetSpeed <= 0) {
-    // D挡正转，默认正转速
+  } else if ((gear === 1 || gear === 2) && step.targetSpeed <= 0) {
+    // D挡正转与R挡反转均给正转速，反转方向由 R 挡请求控制
     step.targetSpeed = Math.abs(step.targetSpeed) || 1000
-  } else if (gear === 2 && step.targetSpeed >= 0) {
-    // R挡反转，默认负转速
-    step.targetSpeed = -Math.abs(step.targetSpeed) || -1000
   }
 }
 
@@ -297,7 +294,7 @@ function handleResetToDefault() {
                 v-model.number="step.targetSpeed"
                 type="number"
                 step="50"
-                min="-12000"
+                min="0"
                 max="12000"
                 :disabled="cycle.isRunning.value || cycle.isPaused.value || step.gear === 3"
               />

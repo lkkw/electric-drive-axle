@@ -15,7 +15,7 @@ export interface CycleStep {
 export const DEFAULT_CYCLE_STEPS: readonly CycleStep[] = [
   { id: 'step-1', name: '正转运行', gear: 1, targetSpeed: 1000, durationSeconds: 60 },
   { id: 'step-2', name: '换向缓冲', gear: 3, targetSpeed: 0, durationSeconds: 5 },
-  { id: 'step-3', name: '反转运行', gear: 2, targetSpeed: -1000, durationSeconds: 60 },
+  { id: 'step-3', name: '反转运行', gear: 2, targetSpeed: 1000, durationSeconds: 60 },
   { id: 'step-4', name: '换向缓冲', gear: 3, targetSpeed: 0, durationSeconds: 5 },
 ]
 
@@ -82,12 +82,12 @@ export function useCycleTest() {
       id: `step-${nextStepId++}`,
       name: gear === 1 ? '正转运行' : '反转运行',
       gear,
-      targetSpeed: gear === 1 ? 1000 : -1000,
+      targetSpeed: 1000,
       durationSeconds: 60,
     }
     steps.value.push(newStep)
     toast.success('已添加工况步骤', {
-      description: `步骤 ${steps.value.length}：${newStep.name}`,
+      description: `步骤 ${steps.value.length}：${newStep.name} (${newStep.gear === 1 ? 'D挡正向' : 'R挡反向'} ${newStep.targetSpeed} RPM, ${newStep.durationSeconds}s)`,
     })
   }
 
@@ -127,12 +127,12 @@ export function useCycleTest() {
         toast.warning(`${prefix} 的时长必须是 1 至 3600 秒的整数`)
         return null
       }
-      if (!Number.isInteger(step.targetSpeed) || Math.abs(step.targetSpeed) > 12000) {
-        toast.warning(`${prefix} 的目标转速必须是 -12000 至 12000 RPM 的整数`)
+      if (!Number.isInteger(step.targetSpeed) || step.targetSpeed < 0 || step.targetSpeed > 12000) {
+        toast.warning(`${prefix} 的目标转速必须是 0 至 12000 RPM 的正整数`)
         return null
       }
-      if ((step.gear === 1 && step.targetSpeed < 0) || (step.gear === 2 && step.targetSpeed > 0)) {
-        toast.warning(`${prefix} 的挡位与转速方向不一致`)
+      if ((step.gear === 1 || step.gear === 2) && step.targetSpeed <= 0) {
+        toast.warning(`${prefix} 为 ${step.gear === 1 ? 'D 挡正转' : 'R 挡反转'}时目标转速必须大于 0 RPM`)
         return null
       }
       if (step.gear === 3 && step.targetSpeed !== 0) {

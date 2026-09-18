@@ -115,11 +115,11 @@ class CycleTestStep(BaseModel):
 
     @model_validator(mode="after")
     def validate_gear_speed_direction(self) -> "CycleTestStep":
-        """挡位和转速方向必须一致，N 挡只允许零转速。"""
+        """D 挡与 R 挡反转运行均应输入正转速（方向由挡位决定），N 挡只允许零转速。"""
         if self.gear == 1 and self.target_speed < 0:
             raise ValueError("D 挡目标转速不能为负数。")
-        if self.gear == 2 and self.target_speed > 0:
-            raise ValueError("R 挡目标转速不能为正数。")
+        if self.gear == 2 and self.target_speed < 0:
+            raise ValueError("R 挡反转运行目标转速不能为负数（由 R 挡请求控制方向，给定正转速）。")
         if self.gear == 3 and self.target_speed != 0:
             raise ValueError("N 挡目标转速必须为 0。")
         return self
