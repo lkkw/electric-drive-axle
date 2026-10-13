@@ -5,6 +5,7 @@ import {
   clearCanFrames,
   connectCan,
   disconnectCan,
+  emergencyReset,
   emergencyStop,
   getAxleStatus,
   getAxleStreamUrl,
@@ -37,7 +38,6 @@ const createInitialTelemetry = (): AxleTelemetry => ({
     work_mode_req: 3,
     mcu_en_cmd: 0,
     gear_sts: 3,
-    active_discharge: 0,
     life: 0,
   },
   cycle_test: {
@@ -70,13 +70,11 @@ const createInitialTelemetry = (): AxleTelemetry => ({
     mcu_motor_tor_max: 0,
     mcu_act_motor_spd: 0,
     mcu_act_motor_tq: 0,
-    mcu_active_dischrg_sts: 3,
     mcu_motor_work_mod: 0,
     mcu_lv_sts: 0,
     mcu_en_sts: 0,
     mcu_motor_temp_extre_over: 0,
     mcu_mcu_temp_extre_over: 0,
-    mcm_slope_sts: 0,
     mcu_life_2: 0,
   },
   mcu_2_last_rx_timestamp: null,
@@ -95,9 +93,12 @@ const createInitialTelemetry = (): AxleTelemetry => ({
       max_motor_speed_rpm: 3000,
       max_motor_torque_nm: 10,
       max_motor_temp_c: 150,
+      feedback_timeout_ms: 500,
     },
     last_trip: null,
   },
+  link_error: null,
+  driver_error: null,
   tx_frame_count: 0,
   rx_frame_count: 0,
   tx_error_count: 0,
@@ -107,11 +108,25 @@ const createInitialTelemetry = (): AxleTelemetry => ({
 })
 
 export interface HistoryPoint {
+  /** 采样时刻 (ms since epoch)，用于按时间窗口裁剪 */
+  timestamp: number
   time: string
   speed: number
   torque: number
   voltage: number
   current: number
+}
+
+/** 曲线保留的时间窗口 */
+export const HISTORY_WINDOW_MS = 30_000
+/** 曲线采样间隔：SSE 约 20Hz 推送，按 10Hz 降采样即可保持波形且减少渲染量 */
+export const HISTORY_SAMPLE_INTERVAL_MS = 100
+
+function formatHistoryTime(timestamp: number) {
+  const moment = new Date(timestamp)
+  const minutes = moment.getMinutes().toString().padStart(2, '0')
+  const seconds = moment.getSeconds().toString().padStart(2, '0')
+  return `${minutes}:${seconds}.${Math.floor(moment.getMilliseconds() / 100)}`
 }
 
 export const useAxleStore = defineStore('axle', () => {
@@ -121,7 +136,7 @@ export const useAxleStore = defineStore('axle', () => {
   const error = ref<string | null>(null)
   const sseConnected = ref<boolean>(false)
 
-  // 历史遥测序列（用于 ECharts 图表展示，保留最近 60 个点）
+  // 历史遥测序列（用于 ECharts 图表展示，保留最近 HISTORY_WINDOW_MS 的降采样数据）
   const historySeries = ref<HistoryPoint[]>([])
 
   let eventSource: EventSource | null = null
@@ -130,6 +145,34 @@ export const useAxleStore = defineStore('axle', () => {
 
   const isConnected = computed(() => telemetry.value.connected)
   const isTransmitting = computed(() => telemetry.value.is_transmitting)
+  /** 急停互锁状态：置位后后端拒绝使能与所有非零控制量，必须复位才能恢复操作 */
+  const isEmergencyLocked = computed(() => telemetry.value.is_emergency_locked)
+  /** 硬件链路故障导致后端自动断开的原因 */
+  const linkError = computed(() => telemetry.value.link_error)
+
+  /** 按采样间隔记录曲线点，并丢弃超出时间窗口的旧点 */
+  function recordHistory(data: AxleTelemetry, now: number = Date.now()) {
+    const series = historySeries.value
+    const last = series[series.length - 1]
+    if (last && now - last.timestamp < HISTORY_SAMPLE_INTERVAL_MS) {
+      return
+    }
+
+    series.push({
+      timestamp: now,
+      time: formatHistoryTime(now),
+      speed: data.mcu_2.mcu_act_motor_spd,
+      torque: data.mcu_2.mcu_act_motor_tq,
+      voltage: data.mcu_1.mcu_dc_main_wire_volt,
+      current: data.mcu_1.mcu_dc_main_wire_curr,
+    })
+
+    const cutoff = now - HISTORY_WINDOW_MS
+    const firstFresh = series.findIndex((point) => point.timestamp >= cutoff)
+    if (firstFresh > 0) {
+      series.splice(0, firstFresh)
+    }
+  }
 
   /** 开启 SSE 遥测实时流 */
   function startSse(includeCanFrames?: boolean) {
@@ -159,25 +202,7 @@ export const useAxleStore = defineStore('axle', () => {
       try {
         const data = JSON.parse(event.data) as AxleTelemetry
         telemetry.value = data
-
-        // 记录历史数据
-        const now = new Date()
-        const timeLabel = `${now.getMinutes().toString().padStart(2, '0')}:${now
-          .getSeconds()
-          .toString()
-          .padStart(2, '0')}.${Math.floor(now.getMilliseconds() / 100)}`
-
-        historySeries.value.push({
-          time: timeLabel,
-          speed: data.mcu_2.mcu_act_motor_spd,
-          torque: data.mcu_2.mcu_act_motor_tq,
-          voltage: data.mcu_1.mcu_dc_main_wire_volt,
-          current: data.mcu_1.mcu_dc_main_wire_curr,
-        })
-
-        if (historySeries.value.length > 60) {
-          historySeries.value.shift()
-        }
+        recordHistory(data)
       } catch (err) {
         console.error('解析遥测 SSE 数据异常:', err)
       }
@@ -291,9 +316,29 @@ export const useAxleStore = defineStore('axle', () => {
     try {
       const updated = await emergencyStop().send()
       telemetry.value.command = updated
-      await refreshStatus()
+      // 接口成功即代表后端已置位互锁；SSE 断开时再补拉完整快照
+      telemetry.value.is_emergency_locked = true
+      if (!sseConnected.value) await refreshStatus()
     } catch (err) {
       error.value = err instanceof Error ? err.message : '紧急停机异常'
+      throw err
+    } finally {
+      loading.value = false
+    }
+  }
+
+  /** 复位急停互锁 (解除后仍需重新下发使能与控制量) */
+  async function resetEmergencyStop() {
+    loading.value = true
+    error.value = null
+    try {
+      const updated = await emergencyReset().send()
+      telemetry.value.command = updated
+      // 接口成功即代表后端已解除互锁，立即解除前端封锁；SSE 断开时再补拉完整快照
+      telemetry.value.is_emergency_locked = false
+      if (!sseConnected.value) await refreshStatus()
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : '解除急停互锁异常'
       throw err
     } finally {
       loading.value = false
@@ -344,6 +389,9 @@ export const useAxleStore = defineStore('axle', () => {
     historySeries,
     isConnected,
     isTransmitting,
+    isEmergencyLocked,
+    linkError,
+    recordHistory,
     startSse,
     stopSse,
     connect,
@@ -354,6 +402,7 @@ export const useAxleStore = defineStore('axle', () => {
     resumeCycle,
     stopCycle,
     triggerEmergencyStop,
+    resetEmergencyStop,
     refreshStatus,
     sendRawFrame,
     clearFrames,

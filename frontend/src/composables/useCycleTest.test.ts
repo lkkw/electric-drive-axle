@@ -131,4 +131,20 @@ describe('useCycleTest composable', () => {
     await cycle.startTest()
     expect(runCycleSpy).not.toHaveBeenCalled()
   })
+
+  it('急停互锁期间拒绝启动循环测试', async () => {
+    const store = useAxleStore()
+    store.telemetry.connected = true
+    store.telemetry.is_emergency_locked = true
+    const runCycleSpy = vi.spyOn(store, 'runCycleTest')
+    const toastErrorSpy = vi.spyOn(toast, 'error')
+
+    const cycle = useCycleTest()
+    await cycle.startTest()
+
+    expect(runCycleSpy).not.toHaveBeenCalled()
+    expect(toastErrorSpy).toHaveBeenCalledWith(
+      '系统处于急停互锁状态，请先在控制台解除急停互锁',
+    )
+  })
 })

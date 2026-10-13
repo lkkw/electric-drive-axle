@@ -1,8 +1,28 @@
-# FastAPI + Vue 3 Full-stack Starter
+# 株齿 2.5T 电驱桥下线测试上位机
 
-一套已完成依赖锁定、类型检查和接口测试的前后端分离模板。后端提供 RESTful API 与
-SSE 实时推送；前端使用 Vue 3、TypeScript、Pinia、Alova、Tailwind CSS v4、
-shadcn/vue 和 Apache ECharts。
+Windows 桌面上位机：通过周立功 USBCAN 以 10 ms 周期向 MCU 下发 VCU_11 (0x258) 控制帧，
+实时解码 MCU 反馈 (0x35A / 0x35B / 0x35C)，提供手动控制、后端循环工况测试、CAN 报文
+监视与多层安全停机。后端为 FastAPI（REST + SSE），前端为 Vue 3 + shadcn/vue，最终由
+PyWebView + PyInstaller 打包为单个 EXE。
+
+通信矩阵与故障码依据仓库根目录的
+`DFAC_Matrix_11898_CAN_DF_8_AMB2_V1.2_PCAN-0813_MCU.xlsx` 与
+`DFAC 控制器故障代码-AMB2(2).xlsx`。
+
+## 架构
+
+```text
+Vue 3 (Pinia / Alova / ECharts)  ──REST + SSE──▶  FastAPI  /api/v1/axle
+                                                     │
+                                             AxleManager (asyncio 单例)
+                                 ┌───────────────┼──────────────────┐
+                           10 ms TX 循环     5 ms RX 循环         循环测试状态机
+                           (VCU_11 0x258)    解码 + 安全监控       (服务端单调时钟)
+                                                     │
+                                   ZlgCanDriver (ctypes + 线程池 + 调用超时)
+                                                     │
+                                             zlgcan.dll → USBCAN
+```
 
 ## 目录结构
 
@@ -10,59 +30,75 @@ shadcn/vue 和 Apache ECharts。
 electric-drive-axle/
 ├─ backend/
 │  ├─ app/
-│  │  ├─ core/
-│  │  │  └─ config.py             # 环境变量和应用配置
-│  │  ├─ routers/
-│  │  │  ├─ demo.py               # REST API 示例
-│  │  │  └─ sse.py                # SSE StreamingResponse 示例
-│  │  ├─ schemas/
-│  │  │  ├─ demo.py               # REST 请求/响应模型
-│  │  │  └─ sse.py                # SSE 消息模型
+│  │  ├─ core/can/            # zlgcan.dll 封装、信号编解码、常量与故障码表
+│  │  ├─ core/config.py       # 环境变量配置（含数据目录）
+│  │  ├─ routers/axle.py      # REST 接口与 SSE 遥测流
+│  │  ├─ schemas/axle.py      # Pydantic 请求/响应/遥测模型
 │  │  ├─ services/
-│  │  │  ├─ demo_service.py       # REST 业务服务
-│  │  │  └─ sse_service.py        # SSE 消息与编码服务
-│  │  └─ main.py                  # FastAPI 工厂、CORS、路由挂载
-│  ├─ tests/                       # REST、SSE 自动化测试
-│  ├─ main.py                      # uv run main.py 本地开发启动器
-│  ├─ desktop.py                   # Uvicorn + PyWebView 桌面入口
-│  ├─ build.py                     # Vue 构建与 PyInstaller 打包流水线
-│  ├─ pyproject.toml               # uv / Hatchling / Python 依赖配置
-│  └─ uv.lock                      # 可复现的 Python 依赖锁
+│  │  │  ├─ axle_manager.py   # 连接生命周期、收发循环、急停、安全监控、循环测试
+│  │  │  └─ safety_store.py   # 安全阈值 JSON 持久化
+│  │  └─ main.py              # FastAPI 工厂（桌面模式下同时托管前端）
+│  ├─ zlgcan_x64/             # 周立功 64 位驱动及 kerneldlls
+│  ├─ tests/                  # pytest（使用模拟驱动，无需硬件）
+│  ├─ main.py                 # 开发启动器 (uvicorn --reload, 端口 8000)
+│  ├─ desktop.py              # PyWebView 桌面入口
+│  └─ build.py                # 前端构建 + PyInstaller 打包
 ├─ frontend/
-│  ├─ src/
-│  │  ├─ api/demo.ts               # Alova API 方法
-│  │  ├─ components/
-│  │  │  ├─ charts/                # ECharts 按需注册与通用实时曲线
-│  │  │  ├─ layout/                # 应用布局：AppLayout / AppSidebar / SiteHeader / nav
-│  │  │  └─ ui/                    # shadcn/vue CLI 生成的组件源码
-│  │  ├─ composables/              # 有界实时数据缓存及其单元测试
-│  │  ├─ lib/utils.ts              # shadcn/vue 的 cn 工具
-│  │  ├─ router/index.ts           # vue-router：在 children 中注册新页面
-│  │  ├─ stores/useDemoStore.ts    # Pinia Setup Store
-│  │  ├─ types/chart.ts            # 与业务协议解耦的图表类型
-│  │  ├─ utils/alova.ts            # Alova 实例与拦截器
-│  │  ├─ views/                    # 页面：DashboardView / SseDemo，新增页面放这里
-│  │  ├─ App.vue
-│  │  ├─ main.ts
-│  │  └─ style.css                 # Tailwind v4 与语义主题变量
-│  ├─ components.json              # shadcn/vue 配置
-│  ├─ package.json
-│  ├─ pnpm-lock.yaml
-│  ├─ pnpm-workspace.yaml
-│  └─ vite.config.ts               # alias、Tailwind 插件与 API 代理
-└─ README.md
+│  └─ src/
+│     ├─ api/axle.ts          # Alova 接口方法
+│     ├─ stores/useAxleStore.ts  # 遥测状态、SSE、曲线历史
+│     ├─ composables/         # 循环测试编辑器等
+│     ├─ components/axle/     # 控制卡、MCU 反馈卡、曲线、急停/故障弹窗
+│     ├─ components/ui/       # shadcn/vue CLI 生成的组件源码
+│     └─ views/               # 控制台 /axle、CAN 通信 /can、安全配置 /safety
+├─ docs/技术文档.md            # 详细技术文档（架构、原理、维护指南）
+├─ .agents/skills/shadcn-vue/  # 前端 UI 组件编写规范
+└─ package_exe.bat            # 一键打包脚本
 ```
+
+## 安全机制
+
+| 机制 | 触发条件 | 动作 |
+|---|---|---|
+| 手动急停 | 操作员点击“紧急停机” | 立即发送停机帧，进入急停互锁 |
+| 越限自动停机 | 新鲜的 0x35B / 0x35C 反馈中转速、转矩（绝对值）或电机温度超过阈值 | 记录事件并进入急停互锁 |
+| 反馈中断看门狗 | 使能期间 0x35B 超过 `feedback_timeout_ms`（默认 500 ms）未更新 | 记录事件并进入急停互锁 |
+| 链路故障自动断开 | 同一通道收/发驱动调用连续异常 10 次或持续 1 s | 结束循环测试、尽力发送停机帧、释放设备并上报 `link_error` |
+| 断开/重连 | 操作员断开或重新连接 | 由 10 ms 循环连续发送两帧安全帧（Life 连续），等待旧任务退出后再释放句柄 |
+
+急停互锁期间后端拒绝使能与任何非零控制量；复位只解除互锁，不恢复停机前的控制量。
+紧急停机按钮常驻顶部栏，任何页面都可触发。软件急停不能替代台架硬件急停。
+
+桌面程序同一时间只允许运行一个；电机已使能或循环测试未结束时关闭窗口会弹出确认，
+确认后发送停机帧再断开 CAN。
+
+## 数据与日志
+
+数据目录默认为 `%APPDATA%\electric-drive-axle\`，可通过环境变量 `AXLE_DATA_DIR` 修改：
+
+| 文件 | 内容 | 保留 |
+|---|---|---|
+| `safety_config.json` | 自动停机阈值，重启后自动恢复；损坏时回退默认值 | 永久 |
+| `logs\app.log` | 全部运行日志（含驱动异常、未捕获异常） | 按天轮转，30 天 |
+| `logs\events.log` | 连接/断开、急停与复位、自动停机、链路故障、循环测试、安全配置变更 | 按天轮转，365 天 |
+
+`zlgcan.dll` 加载失败时程序仍会启动，CAN 通讯页显示失败原因并禁用连接按钮。
+
+## 版本号
+
+唯一来源为 `backend/app/__init__.py` 的 `__version__`，`backend/pyproject.toml` 与
+`frontend/package.json` 必须同步修改（测试会校验）。版本号与构建时间显示在左下角“软件信息”中。
 
 ## 环境要求
 
-- Python 3.12+
-- [uv](https://docs.astral.sh/uv/)
-- Node.js `^20.19.0 || >=22.12.0`（推荐当前 LTS）
-- pnpm 11+
+- Windows 10/11 x64（`zlgcan.dll` 仅支持 Windows）
+- Python 3.12+ 与 [uv](https://docs.astral.sh/uv/)
+- Node.js `^20.19.0 || >=22.12.0` 与 pnpm 11+
+- 目标电脑需安装 Microsoft Edge WebView2 Runtime（桌面窗口）
 
-## 启动后端
+## 本地开发
 
-打开第一个 PowerShell：
+后端：
 
 ```powershell
 cd backend
@@ -72,20 +108,8 @@ uv run main.py
 
 - API 文档：<http://127.0.0.1:8000/docs>
 - 健康检查：<http://127.0.0.1:8000/health>
-- REST 示例：<http://127.0.0.1:8000/api/v1/demo>
-- SSE 示例：<http://127.0.0.1:8000/api/v1/sse/events>
 
-根目录 `main.py` 是便捷的本地开发启动器；真正的 ASGI 应用仍位于
-`app/main.py`，这样既能使用熟悉的 `uv run main.py`，又能让 Hatchling 正确构建并
-安装整个 `app` 包。生产环境仍可使用：
-
-```powershell
-uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
-```
-
-## 启动前端
-
-打开第二个 PowerShell：
+前端（另开一个终端）：
 
 ```powershell
 cd frontend
@@ -93,58 +117,15 @@ pnpm install
 pnpm dev
 ```
 
-浏览器访问 <http://127.0.0.1:5173>。Vite 会把 `/api` 代理到
-`http://127.0.0.1:8000`，所以本地开发无需额外处理 CORS。
+浏览器访问 <http://127.0.0.1:5173>，Vite 会把 `/api` 代理到 `http://127.0.0.1:8000`。
 
-如果前后端部署在不同域名，复制 `frontend/.env.example` 为 `.env.local`，并将
-`VITE_API_BASE_URL` 设置为后端的完整 API 地址，例如：
-
-```dotenv
-VITE_API_BASE_URL=https://api.example.com/api/v1
-```
-
-同时通过后端环境变量显式声明允许的前端来源：
-
-```powershell
-$env:CORS_ORIGINS="https://app.example.com"
-uv run uvicorn app.main:app
-```
-
-## 前端布局
-
-应用已使用 shadcn/vue 官方 Sidebar 组件搭好布局框架
-（对应官方 blocks 的 dashboard-01 / sidebar-07）：
-
-- `src/components/layout/AppLayout.vue`：布局壳（侧边栏 + 顶部栏 + 内容区）
-- `src/components/layout/AppSidebar.vue`：侧边栏菜单配置（导航数据集中在此）
-- `src/components/layout/SiteHeader.vue`：顶部栏（折叠按钮 + 面包屑）
-- `src/components/demo/RouteTestPanel.vue`：路由测试面板（示例页面共用）
-
-**现有页面**：仪表盘 `/`、SSE 实时消息 `/realtime`、示例页面一 `/pages/one`、
-示例页面二 `/pages/two`（后两个为路由跳转测试界面，可直接替换为业务页面）。
-
-**以后新增页面只需三步**：
-
-1. 在 `src/views/` 下新建页面组件；
-2. 在 `src/router/index.ts` 的 `children` 中注册路由；
-3. 在 `src/components/layout/AppSidebar.vue` 的 `navMain` / `projects` 中追加菜单项
-   （激活状态会跟随当前路由自动高亮）。
-
-侧边栏支持折叠为图标模式（`Ctrl+B` 快捷键）与移动端抽屉，菜单带子菜单的
-分组使用 `Collapsible` 折叠交互。
-
-## 常用检查命令
-
-后端：
+## 检查命令
 
 ```powershell
 cd backend
 uv run pytest
 uv run ruff check .
-uv run ruff format --check .
 ```
-
-前端：
 
 ```powershell
 cd frontend
@@ -153,101 +134,29 @@ pnpm test
 pnpm build
 ```
 
-## 扩展 shadcn/vue 组件
-
-项目已执行过初始化，新增组件时继续通过 CLI 写入本地源码：
-
-```powershell
-cd frontend
-pnpm dlx shadcn-vue@latest add dialog input table
-```
-
-## 实时曲线
-
-模板使用 `echarts` 与 `vue-echarts`，并在
-`src/components/charts/RealtimeLineChart.vue` 中提供通用时间序列组件。ECharts 采用
-Canvas 渲染和按需注册，曲线组件又通过异步导入拆分为独立构建块，不阻塞主界面首屏。
-
-SSE 页面中的数据链如下：
-
-```text
-SSE 原始消息 → 运行时字段校验 → 固定长度环形缓存 → 每 100 ms 批量发布 → ECharts setOption
-```
-
-示例最多保留 1000 个曲线点；SSE 断线重连时插入空值断点，避免把两个独立连接的
-数据误连成一条连续曲线。真实设备项目应将明确的数值字段映射到通用类型：
-
-```ts
-interface RealtimeLinePoint {
-  timestamp: number
-  value: number | null
-}
-```
-
-不要从显示文本中解析数值，也不要在每条 SSE 消息到达时直接重绘。新增散点图、热力图
-或仪表盘时，在 `src/components/charts/echarts.ts` 中按需注册对应模块即可。
-
 ## 打包 Windows 桌面 EXE
 
-桌面打包是可选交付层，不影响日常使用的 `uv run main.py`。`build.py` 会依次构建
-Vue、把 `frontend/dist` 复制到生成目录 `backend/static`，再以 `desktop.py` 为入口调用
-PyInstaller。桌面入口使用系统分配的随机端口，并由同一个 FastAPI 进程提供 API、SSE
-和 Vue 页面。
-
-首次准备桌面依赖：
+直接运行根目录的 `package_exe.bat` 即可交互式选择单文件或目录模式。手动执行：
 
 ```powershell
 cd backend
 uv sync --group desktop
-```
-
-建议先构建目录模式并保留控制台，便于检查启动日志：
-
-```powershell
+# 目录模式 + 控制台日志，适合现场调试
 uv run --group desktop python build.py --mode onedir --console --smoke-test
-```
-
-生成文件位于：
-
-```text
-backend/release/Electric-Drive-Axle/Electric-Drive-Axle.exe
-```
-
-测试完成后再生成最终的单文件、无控制台版本：
-
-```powershell
+# 单文件、无控制台的交付版本
 uv run --group desktop python build.py --mode onefile --smoke-test
 ```
 
-最终文件位于 `backend/release/Electric-Drive-Axle.exe`。如需指定名称或图标：
+产物位于 `backend/release/`。`backend/static`、`backend/build`、`backend/release` 均为生成
+目录，不要手工维护；打包前先关闭正在运行的旧 EXE。
+
+## 扩展 shadcn/vue 组件
+
+新增 UI 组件通过 CLI 写入本地源码，并遵循 `.agents/skills/shadcn-vue` 中的规则：
 
 ```powershell
-uv run --group desktop python build.py --mode onefile `
-  --name "我的上位机" `
-  --icon .\assets\app.ico
+cd frontend
+pnpm dlx shadcn-vue@latest add <component>
 ```
 
-只想构建前端并本地测试桌面窗口，不执行 PyInstaller：
-
-```powershell
-uv run python build.py --prepare-only
-uv run --group desktop python desktop.py
-```
-
-注意：
-
-- `backend/static`、`backend/build` 和 `backend/release` 都是生成目录，不应手工维护。
-- 最终打包前先关闭正在运行的旧 EXE，避免 Windows 占用输出文件。
-- 用户可修改的配置、数据库和日志不要写进单文件 EXE 的内置资源目录；应保存到
-  AppData 或 EXE 外部目录。
-- 硬件项目的 DLL 使用 PyInstaller `--add-binary` 单独配置，CAN 驱动、业务配置和图标
-  不属于通用模板，按具体项目补充。
-- 目标电脑需要可用的 Microsoft Edge WebView2 Runtime 才能显示 PyWebView 窗口。
-
-## SSE 注意事项
-
-- `EventSource` 会自动重连；页面中不额外创建重连计时器，避免重复连接。
-- 组件卸载和手动断开时都会执行 `close()`。
-- 原生 `EventSource` 不能自定义 `Authorization` Header。需要 Bearer Token 或 POST
-  SSE 时，可改用 Alova 的 `useSSE`，或采用同站 Cookie / 短期查询令牌方案。
-- 生产环境使用 Nginx 等反向代理时，应关闭该 SSE 路径的响应缓冲。
+代码结构、设计原理与维护指南见 [docs/技术文档.md](docs/技术文档.md)。

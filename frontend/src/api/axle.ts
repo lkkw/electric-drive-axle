@@ -54,6 +54,10 @@ export const stopCycleTest = () =>
 export const emergencyStop = () =>
   alova.Post<VcuCommandState>('/axle/emergency-stop', {})
 
+/** 复位急停互锁 (仅解除锁定，不会自动恢复使能与控制量) */
+export const emergencyReset = () =>
+  alova.Post<VcuCommandState>('/axle/emergency-reset', {})
+
 /** 获取上位机自动紧急停机阈值 */
 export const getSafetyConfig = () =>
   alova.Get<AxleSafetyConfig>('/axle/safety/config', { cacheFor: 0 })

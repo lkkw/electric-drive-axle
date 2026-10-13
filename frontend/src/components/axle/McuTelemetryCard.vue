@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 
-import { cn } from "@/lib/utils";
-import { Badge } from "@/components/ui/badge";
+import { Badge, type BadgeVariants } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import FaultCodeDialog from "@/components/axle/FaultCodeDialog.vue";
 import { useAxleStore } from "@/stores/useAxleStore";
@@ -13,20 +12,43 @@ import {
   WORK_MODE_MAP,
 } from "@/types/axle";
 
+type BadgeVariant = NonNullable<BadgeVariants["variant"]>;
+
+interface MetricTile {
+  label: string;
+  value: string;
+  unit: string;
+}
+
+interface StatusRow {
+  label: string;
+  value: string;
+  /** 不提供时按普通数值展示，提供时以对应 Badge 变体展示 */
+  variant?: BadgeVariant;
+}
+
+interface StatusGroup {
+  title: string;
+  canId: string;
+  rows: StatusRow[];
+}
+
 const axleStore = useAxleStore();
 
 /** 界面刷新节流周期 (ms)，降低高频 CAN 数据导致的 UI 渲染开销 */
 const DISPLAY_REFRESH_INTERVAL_MS = 200;
+/** 反馈新鲜度裕量：0x35B 周期 10 ms，0x35A / 0x35C 周期 100 ms */
+const MCU_2_FRESH_MS = 500;
+const MCU_1_FRESH_MS = 1000;
+const MCU_TBOX_FRESH_MS = 1000;
+const PLACEHOLDER = "--";
 
-const displayedMcu1 = ref({ ...axleStore.telemetry.mcu_1 });
-const displayedMcu2 = ref({ ...axleStore.telemetry.mcu_2 });
-
-const mcu1 = computed(() => displayedMcu1.value);
-const mcu2 = computed(() => displayedMcu2.value);
+const mcu1 = ref({ ...axleStore.telemetry.mcu_1 });
+const mcu2 = ref({ ...axleStore.telemetry.mcu_2 });
+const tbox = ref({ ...axleStore.telemetry.mcu_tbox });
 const activeFaultInfo = computed(() => getMcuFaultInfo(mcu1.value.mcu_flt_code));
 
 const feedbackClock = ref(Date.now());
-let feedbackClockTimer: ReturnType<typeof setInterval> | undefined;
 let displayRefreshTimer: ReturnType<typeof setInterval> | undefined;
 
 function formatDecimal(val: number | null | undefined, precision = 1): string {
@@ -40,8 +62,10 @@ function formatInteger(val: number | null | undefined): string {
 }
 
 function refreshDisplayedTelemetry(): void {
-  displayedMcu1.value = { ...axleStore.telemetry.mcu_1 };
-  displayedMcu2.value = { ...axleStore.telemetry.mcu_2 };
+  mcu1.value = { ...axleStore.telemetry.mcu_1 };
+  mcu2.value = { ...axleStore.telemetry.mcu_2 };
+  tbox.value = { ...axleStore.telemetry.mcu_tbox };
+  feedbackClock.value = Date.now();
 }
 
 onMounted(() => {
@@ -50,339 +74,244 @@ onMounted(() => {
     refreshDisplayedTelemetry,
     DISPLAY_REFRESH_INTERVAL_MS,
   );
-
-  feedbackClockTimer = setInterval(() => {
-    feedbackClock.value = Date.now();
-  }, 250);
 });
 
 onBeforeUnmount(() => {
   if (displayRefreshTimer) {
     clearInterval(displayRefreshTimer);
   }
-  if (feedbackClockTimer) {
-    clearInterval(feedbackClockTimer);
-  }
 });
 
-// 0x35B 期望以 10 ms 周期返回，留出 500 ms 裕量判别通信状态
-const hasFreshMcu2Feedback = computed(() => {
-  const receivedAt = axleStore.telemetry.mcu_2_last_rx_timestamp;
+function isFresh(receivedAt: number | null, marginMs: number): boolean {
   return (
     axleStore.isConnected &&
     receivedAt !== null &&
-    feedbackClock.value - receivedAt * 1000 <= 500
+    feedbackClock.value - receivedAt * 1000 <= marginMs
   );
-});
+}
 
-// 0x35A 期望以 100 ms 周期返回，留出 1000 ms 裕量判别通信状态
-const hasFreshMcu1Feedback = computed(() => {
-  const receivedAt = axleStore.telemetry.mcu_1_last_rx_timestamp;
-  return (
-    axleStore.isConnected &&
-    receivedAt !== null &&
-    feedbackClock.value - receivedAt * 1000 <= 1000
-  );
-});
+const hasFreshMcu2 = computed(() =>
+  isFresh(axleStore.telemetry.mcu_2_last_rx_timestamp, MCU_2_FRESH_MS),
+);
+const hasFreshMcu1 = computed(() =>
+  isFresh(axleStore.telemetry.mcu_1_last_rx_timestamp, MCU_1_FRESH_MS),
+);
+const hasFreshTbox = computed(() =>
+  isFresh(axleStore.telemetry.mcu_tbox_last_rx_timestamp, MCU_TBOX_FRESH_MS),
+);
 
 const lowVoltageStatusText = computed(() => {
-  if (!hasFreshMcu2Feedback.value) return "低压未知";
+  if (!hasFreshMcu2.value) return "低压未知";
   return mcu2.value.mcu_lv_sts === 1 ? "低压已上电" : "低压未上电";
 });
 
 const enableStatusText = computed(() => {
-  if (!hasFreshMcu2Feedback.value) return "使能未知";
+  if (!hasFreshMcu2.value) return "使能未知";
   return mcu2.value.mcu_en_sts === 1 ? "MCU 已使能" : "MCU 未使能";
 });
 
 const workModeStatusText = computed(() => {
-  if (!hasFreshMcu2Feedback.value) return "模式未知";
+  if (!hasFreshMcu2.value) return "模式未知";
   return mcu2.value.mcu_motor_work_mod === 0
     ? "无操作"
     : (WORK_MODE_MAP[mcu2.value.mcu_motor_work_mod] ?? "未知模式");
 });
 
-const isSystemNormal = computed(() => {
-  return (
-    hasFreshMcu1Feedback.value &&
+const hasOverTemperature = computed(
+  () =>
+    hasFreshMcu2.value &&
+    (mcu2.value.mcu_motor_temp_extre_over === 1 ||
+      mcu2.value.mcu_mcu_temp_extre_over === 1),
+);
+
+const isSystemNormal = computed(
+  () =>
+    hasFreshMcu1.value &&
     mcu1.value.mcu_flt_levl === 0 &&
     mcu1.value.mcu_tbox_flt_levl === 0 &&
-    mcu2.value.mcu_motor_temp_extre_over === 0 &&
-    mcu2.value.mcu_mcu_temp_extre_over === 0
-  );
+    !hasOverTemperature.value,
+);
+
+const metricTiles = computed<MetricTile[]>(() => [
+  { label: "实际转速", value: formatInteger(mcu2.value.mcu_act_motor_spd), unit: "RPM" },
+  { label: "实际转矩", value: formatDecimal(mcu2.value.mcu_act_motor_tq), unit: "Nm" },
+  { label: "最大可用转矩", value: formatDecimal(mcu2.value.mcu_motor_tor_max), unit: "Nm" },
+  { label: "母线电压", value: formatDecimal(mcu1.value.mcu_dc_main_wire_volt), unit: "V" },
+  { label: "母线电流", value: formatDecimal(mcu1.value.mcu_dc_main_wire_curr), unit: "A" },
+  {
+    label: "电机温度",
+    value: hasFreshTbox.value ? formatInteger(tbox.value.mcu_motor_temp) : PLACEHOLDER,
+    unit: "℃",
+  },
+]);
+
+function overTemperatureRow(label: string, flag: number): StatusRow {
+  if (!hasFreshMcu2.value) return { label, value: "未知", variant: "secondary" };
+  return flag === 1
+    ? { label, value: "过温报警", variant: "destructive" }
+    : { label, value: "正常", variant: "success" };
+}
+
+const statusGroups = computed<StatusGroup[]>(() => {
+  const faultCode = mcu1.value.mcu_flt_code;
+  const faultLevel = mcu1.value.mcu_flt_levl;
+  const tboxLevel = mcu1.value.mcu_tbox_flt_levl;
+
+  return [
+    {
+      title: "温度监控",
+      canId: "0x35B / 0x35C",
+      rows: [
+        {
+          label: "控制器温度",
+          value: hasFreshTbox.value
+            ? `${formatInteger(tbox.value.mcu_ctller_temp)} ℃`
+            : PLACEHOLDER,
+        },
+        overTemperatureRow("电机过温", mcu2.value.mcu_motor_temp_extre_over),
+        overTemperatureRow("控制器过温", mcu2.value.mcu_mcu_temp_extre_over),
+        hasFreshMcu1.value
+          ? {
+              label: "温度故障等级",
+              value: TBOX_FAULT_LEVEL_MAP[tboxLevel] ?? `等级 ${tboxLevel}`,
+              variant: tboxLevel === 0 ? "success" : "destructive",
+            }
+          : { label: "温度故障等级", value: "未知", variant: "secondary" },
+      ],
+    },
+    {
+      title: "故障诊断",
+      canId: "0x35A",
+      rows: hasFreshMcu1.value
+        ? [
+            {
+              label: "故障代码",
+              value:
+                faultCode === 0
+                  ? "无"
+                  : `0x${faultCode.toString(16).toUpperCase()} · ${activeFaultInfo.value?.code ?? "未知"}`,
+              variant: faultCode === 0 ? "success" : "destructive",
+            },
+            {
+              label: "故障含义",
+              value: faultCode === 0 ? "—" : (activeFaultInfo.value?.meaning ?? "故障表未收录"),
+            },
+            {
+              label: "故障等级",
+              value: FAULT_LEVEL_MAP[faultLevel]?.text ?? `等级 ${faultLevel}`,
+              variant: faultLevel === 0 ? "success" : "destructive",
+            },
+            { label: "故障个数", value: formatInteger(mcu1.value.mcu_integ_ctr_flt_num) },
+          ]
+        : [
+            { label: "故障代码", value: "未知", variant: "secondary" },
+            { label: "故障含义", value: PLACEHOLDER },
+            { label: "故障等级", value: "未知", variant: "secondary" },
+            { label: "故障个数", value: PLACEHOLDER },
+          ],
+    },
+  ];
 });
+
+const heartbeats = computed(() => [
+  { id: "0x35A", life: mcu1.value.mcu_life_1, fresh: hasFreshMcu1.value },
+  { id: "0x35B", life: mcu2.value.mcu_life_2, fresh: hasFreshMcu2.value },
+  { id: "0x35C", life: tbox.value.mcu_tbox_life, fresh: hasFreshTbox.value },
+]);
 </script>
 
 <template>
-  <Card class="border-border shadow-xs h-full flex flex-col">
+  <Card class="h-full flex flex-col">
     <!-- 顶部状态栏 -->
-    <CardHeader class="pb-3 border-b bg-muted/20">
-      <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between min-h-7">
+    <CardHeader class="border-b pb-3">
+      <!-- 第一行：标题 + 故障报警与安全指示 -->
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <CardTitle>MCU 实时反馈</CardTitle>
         <div class="flex flex-wrap items-center gap-2">
-          <CardTitle class="text-base font-semibold">
-            MCU 实时反馈
-          </CardTitle>
-
-          <!-- 0x35B 核心硬件与控制状态 -->
-          <Badge
-            :variant="hasFreshMcu2Feedback && mcu2.mcu_lv_sts === 1 ? 'success' : 'secondary'"
-            class="text-xs px-1.5 py-0"
-          >
-            {{ lowVoltageStatusText }}
-          </Badge>
-
-          <Badge
-            :variant="hasFreshMcu2Feedback && mcu2.mcu_en_sts === 1 ? 'success' : 'secondary'"
-            class="text-xs px-1.5 py-0"
-          >
-            {{ enableStatusText }}
-          </Badge>
-
-          <Badge
-            :variant="hasFreshMcu2Feedback && mcu2.mcu_motor_work_mod !== 0 ? 'outline' : 'secondary'"
-            class="text-xs px-1.5 py-0"
-            :class="hasFreshMcu2Feedback && mcu2.mcu_motor_work_mod !== 0 ? 'border-primary/50 text-primary font-medium' : ''"
-          >
-            {{ workModeStatusText }}
-          </Badge>
-
-          <Badge
-            v-if="hasFreshMcu2Feedback && mcu2.mcm_slope_sts === 1"
-            variant="outline"
-            class="border-warning/60 bg-warning/5 text-warning font-semibold text-xs px-1.5 py-0"
-          >
-            驻坡中
-          </Badge>
-        </div>
-
-        <!-- 故障报警与安全指示 -->
-        <div class="flex flex-wrap items-center gap-1.5 shrink-0">
-          <Badge
-            v-if="isSystemNormal"
-            variant="outline"
-            class="border-success/60 bg-success/5 text-success font-semibold text-xs px-1.5 py-0"
-          >
-            系统正常
-          </Badge>
-          <Badge
-            v-else-if="hasFreshMcu1Feedback && mcu1.mcu_flt_levl !== 0"
-            variant="destructive"
-            class="animate-pulse font-bold text-xs px-1.5 py-0"
-          >
+          <Badge v-if="isSystemNormal" variant="success">系统正常</Badge>
+          <Badge v-else-if="hasFreshMcu1 && mcu1.mcu_flt_levl !== 0" variant="destructive">
             {{ FAULT_LEVEL_MAP[mcu1.mcu_flt_levl]?.text ?? '故障报警' }}
           </Badge>
-
-          <Badge
-            v-if="hasFreshMcu1Feedback && mcu1.mcu_tbox_flt_levl !== 0"
-            variant="destructive"
-            class="animate-pulse font-bold text-xs px-1.5 py-0"
-          >
+          <Badge v-if="hasFreshMcu1 && mcu1.mcu_tbox_flt_levl !== 0" variant="destructive">
             {{ TBOX_FAULT_LEVEL_MAP[mcu1.mcu_tbox_flt_levl] ?? '温度报警' }}
           </Badge>
-
-          <Badge
-            v-if="hasFreshMcu2Feedback && (mcu2.mcu_motor_temp_extre_over === 1 || mcu2.mcu_mcu_temp_extre_over === 1)"
-            variant="destructive"
-            class="animate-pulse font-bold text-xs px-1.5 py-0"
-          >
-            过温故障
-          </Badge>
-
+          <Badge v-if="hasOverTemperature" variant="destructive">过温故障</Badge>
           <FaultCodeDialog :current-flt-code="mcu1.mcu_flt_code" />
         </div>
       </div>
+
+      <!-- 第二行：0x35B 上电、使能与模式反馈 -->
+      <div class="flex flex-wrap items-center gap-2">
+        <Badge :variant="hasFreshMcu2 && mcu2.mcu_lv_sts === 1 ? 'success' : 'secondary'">
+          {{ lowVoltageStatusText }}
+        </Badge>
+        <Badge :variant="hasFreshMcu2 && mcu2.mcu_en_sts === 1 ? 'success' : 'secondary'">
+          {{ enableStatusText }}
+        </Badge>
+        <Badge :variant="hasFreshMcu2 && mcu2.mcu_motor_work_mod !== 0 ? 'info' : 'secondary'">
+          {{ workModeStatusText }}
+        </Badge>
+      </div>
     </CardHeader>
 
-    <CardContent class="p-4 sm:p-5 flex-1 flex flex-col gap-4">
-      <!-- 动力与电气核心数值网格 (3列 x 2行，严格对齐 CAN 报文信号) -->
-      <div class="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
-        <!-- 实际转速 (0x35B) -->
-        <div class="p-3 bg-muted/25 rounded-lg border border-border/60 flex flex-col justify-between gap-1.5">
-          <div class="text-xs text-muted-foreground font-semibold h-4 flex items-center">实际转速</div>
-          <div class="flex items-baseline justify-between gap-1 h-7">
-            <span class="text-xl font-mono font-bold tabular-nums text-info truncate leading-7">
-              {{ formatInteger(mcu2.mcu_act_motor_spd) }}
+    <CardContent class="@container flex flex-1 flex-col gap-5 p-4 sm:p-5">
+      <!-- 动力、电气与温度核心数值 -->
+      <div class="grid grid-cols-2 gap-3 @sm:grid-cols-3">
+        <div
+          v-for="tile in metricTiles"
+          :key="tile.label"
+          class="flex flex-col gap-1 rounded-lg border bg-muted/30 p-3"
+        >
+          <span class="text-xs text-muted-foreground">{{ tile.label }}</span>
+          <div class="flex items-baseline justify-between gap-2">
+            <span class="truncate font-mono text-xl font-semibold tabular-nums text-foreground">
+              {{ tile.value }}
             </span>
-            <span class="text-xs font-normal text-muted-foreground font-sans shrink-0 select-none leading-7">
-              RPM
-            </span>
+            <span class="shrink-0 text-xs text-muted-foreground">{{ tile.unit }}</span>
           </div>
         </div>
+      </div>
 
-        <!-- 实际转矩 (0x35B) -->
-        <div class="p-3 bg-muted/25 rounded-lg border border-border/60 flex flex-col justify-between gap-1.5">
-          <div class="text-xs text-muted-foreground font-semibold h-4 flex items-center">实际转矩</div>
-          <div class="flex items-baseline justify-between gap-1 h-7">
-            <span class="text-xl font-mono font-bold tabular-nums text-warning truncate leading-7">
-              {{ formatDecimal(mcu2.mcu_act_motor_tq) }}
-            </span>
-            <span class="text-xs font-normal text-muted-foreground font-sans shrink-0 select-none leading-7">
-              Nm
-            </span>
+      <!-- 运行监控与状态诊断：两组宽松键值列表 -->
+      <div class="grid flex-1 grid-cols-1 gap-4 @md:grid-cols-2">
+        <section
+          v-for="group in statusGroups"
+          :key="group.title"
+          class="flex flex-col rounded-lg border"
+        >
+          <div class="flex items-center justify-between px-4 pt-3">
+            <h3 class="text-sm font-medium text-foreground">{{ group.title }}</h3>
+            <span class="font-mono text-xs text-muted-foreground">{{ group.canId }}</span>
           </div>
-        </div>
-
-        <!-- 最大可用转矩 (0x35B) -->
-        <div class="p-3 bg-muted/25 rounded-lg border border-border/60 flex flex-col justify-between gap-1.5">
-          <div class="text-xs text-muted-foreground font-semibold h-4 flex items-center">最大可用转矩</div>
-          <div class="flex items-baseline justify-between gap-1 h-7">
-            <span class="text-xl font-mono font-bold tabular-nums text-foreground truncate leading-7">
-              {{ formatDecimal(mcu2.mcu_motor_tor_max) }}
-            </span>
-            <span class="text-xs font-normal text-muted-foreground font-sans shrink-0 select-none leading-7">
-              Nm
-            </span>
-          </div>
-        </div>
-
-        <!-- 母线电压 (0x35A) -->
-        <div class="p-3 bg-muted/25 rounded-lg border border-border/60 flex flex-col justify-between gap-1.5">
-          <div class="text-xs text-muted-foreground font-semibold h-4 flex items-center">母线电压</div>
-          <div class="flex items-baseline justify-between gap-1 h-7">
-            <span class="text-xl font-mono font-bold tabular-nums text-primary truncate leading-7">
-              {{ formatDecimal(mcu1.mcu_dc_main_wire_volt) }}
-            </span>
-            <span class="text-xs font-normal text-muted-foreground font-sans shrink-0 select-none leading-7">
-              V
-            </span>
-          </div>
-        </div>
-
-        <!-- 母线电流 (0x35A) -->
-        <div class="p-3 bg-muted/25 rounded-lg border border-border/60 flex flex-col justify-between gap-1.5">
-          <div class="text-xs text-muted-foreground font-semibold h-4 flex items-center">母线电流</div>
-          <div class="flex items-baseline justify-between gap-1 h-7">
-            <span class="text-xl font-mono font-bold tabular-nums text-info truncate leading-7">
-              {{ formatDecimal(mcu1.mcu_dc_main_wire_curr) }}
-            </span>
-            <span class="text-xs font-normal text-muted-foreground font-sans shrink-0 select-none leading-7">
-              A
-            </span>
-          </div>
-        </div>
-
-        <!-- 主动放电状态 (0x35B) -->
-        <div class="p-3 bg-muted/25 rounded-lg border border-border/60 flex flex-col justify-between gap-1.5">
-          <div class="text-xs text-muted-foreground font-semibold h-4 flex items-center">主动放电</div>
-          <div class="flex items-baseline justify-between h-7">
-            <span
-              class="text-base font-bold truncate leading-7"
-              :class="cn(
-                mcu2.mcu_active_dischrg_sts === 0 ? 'text-warning' :
-                mcu2.mcu_active_dischrg_sts === 1 ? 'text-success' :
-                mcu2.mcu_active_dischrg_sts === 2 ? 'text-destructive' : 'text-muted-foreground'
-              )"
+          <dl class="flex flex-col gap-3 px-4 pt-3 pb-4">
+            <div
+              v-for="row in group.rows"
+              :key="row.label"
+              class="flex items-center justify-between gap-3 text-sm"
             >
-              {{
-                mcu2.mcu_active_dischrg_sts === 0 ? "放电中" :
-                mcu2.mcu_active_dischrg_sts === 1 ? "放电完成" :
-                mcu2.mcu_active_dischrg_sts === 2 ? "放电失败" : "未触发"
-              }}
-            </span>
-          </div>
-        </div>
+              <dt class="shrink-0 text-muted-foreground">{{ row.label }}</dt>
+              <dd class="min-w-0 text-right">
+                <Badge v-if="row.variant" :variant="row.variant">{{ row.value }}</Badge>
+                <span v-else class="block truncate font-mono text-foreground" :title="row.value">
+                  {{ row.value }}
+                </span>
+              </dd>
+            </div>
+          </dl>
+        </section>
       </div>
 
-      <!-- 小节标题：运行监控与状态诊断 -->
-      <div class="flex items-center gap-2 text-xs font-semibold text-muted-foreground select-none">
-        <span class="size-1.5 rounded-full bg-primary/60" />
-        <span>运行监控与状态诊断</span>
-        <div class="flex-1 h-px bg-border/60" />
-      </div>
-
-      <!-- 控制状态、温度安全与故障诊断 (3列等宽对齐排布，工控键值表设计) -->
-      <div class="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs flex-1">
-        <!-- 控制与运行状态 (0x35B) -->
-        <div class="rounded-lg border border-border/60 bg-muted/20 overflow-hidden flex flex-col">
-          <div class="px-3 py-1.5 border-b border-border/50 bg-muted/40 flex items-center justify-between">
-            <span class="font-semibold text-xs text-foreground/90">控制状态</span>
-            <span class="text-[10px] font-mono text-muted-foreground">0x35B</span>
-          </div>
-          <div class="px-3 py-1 flex-1 flex flex-col justify-around divide-y divide-border/30">
-            <div class="flex items-center justify-between min-h-7 py-1">
-              <span class="text-muted-foreground">工作模式:</span>
-              <span class="font-medium text-foreground">{{ workModeStatusText }}</span>
-            </div>
-            <div class="flex items-center justify-between min-h-7 py-1">
-              <span class="text-muted-foreground">MCU使能:</span>
-              <span :class="mcu2.mcu_en_sts === 1 ? 'text-success font-semibold' : 'text-muted-foreground'">
-                {{ mcu2.mcu_en_sts === 1 ? '已使能' : '未使能' }}
-              </span>
-            </div>
-            <div class="flex items-center justify-between min-h-7 py-1">
-              <span class="text-muted-foreground">低压状态:</span>
-              <span :class="mcu2.mcu_lv_sts === 1 ? 'text-success font-semibold' : 'text-muted-foreground'">
-                {{ mcu2.mcu_lv_sts === 1 ? '正常' : '无效' }}
-              </span>
-            </div>
-            <div class="flex items-center justify-between min-h-7 py-1">
-              <span class="text-muted-foreground">通信心跳:</span>
-              <span class="font-mono text-foreground font-semibold">{{ mcu2.mcu_life_2 }}</span>
-            </div>
-          </div>
-        </div>
-
-        <!-- 温度安全保护 (0x35A/B) -->
-        <div class="rounded-lg border border-border/60 bg-muted/20 overflow-hidden flex flex-col">
-          <div class="px-3 py-1.5 border-b border-border/50 bg-muted/40 flex items-center justify-between">
-            <span class="font-semibold text-xs text-foreground/90">温度安全</span>
-            <span class="text-[10px] font-mono text-muted-foreground">0x35A/B</span>
-          </div>
-          <div class="px-3 py-1 flex-1 flex flex-col justify-around divide-y divide-border/30">
-            <div class="flex items-center justify-between min-h-7 py-1">
-              <span class="text-muted-foreground">电机过温:</span>
-              <span :class="mcu2.mcu_motor_temp_extre_over === 1 ? 'text-destructive font-bold' : 'text-success'">
-                {{ mcu2.mcu_motor_temp_extre_over === 1 ? '过温报警' : '正常' }}
-              </span>
-            </div>
-            <div class="flex items-center justify-between min-h-7 py-1">
-              <span class="text-muted-foreground">控制器过温:</span>
-              <span :class="mcu2.mcu_mcu_temp_extre_over === 1 ? 'text-destructive font-bold' : 'text-success'">
-                {{ mcu2.mcu_mcu_temp_extre_over === 1 ? '过温报警' : '正常' }}
-              </span>
-            </div>
-            <div class="flex items-center justify-between min-h-7 py-1">
-              <span class="text-muted-foreground">温度故障级:</span>
-              <span :class="mcu1.mcu_tbox_flt_levl === 0 ? 'text-success' : 'text-destructive font-semibold'">
-                {{ TBOX_FAULT_LEVEL_MAP[mcu1.mcu_tbox_flt_levl] ?? '正常' }}
-              </span>
-            </div>
-            <div class="flex items-center justify-between min-h-7 py-1">
-              <span class="text-muted-foreground">驻坡状态:</span>
-              <span :class="mcu2.mcm_slope_sts === 1 ? 'text-warning font-semibold' : 'text-foreground'">
-                {{ mcu2.mcm_slope_sts === 1 ? '驻坡中' : '未驻坡' }}
-              </span>
-            </div>
-          </div>
-        </div>
-
-        <!-- MCU 故障诊断 (0x35A) -->
-        <div class="rounded-lg border border-border/60 bg-muted/20 overflow-hidden flex flex-col">
-          <div class="px-3 py-1.5 border-b border-border/50 bg-muted/40 flex items-center justify-between">
-            <span class="font-semibold text-xs text-foreground/90">故障诊断</span>
-            <span class="text-[10px] font-mono text-muted-foreground">0x35A</span>
-          </div>
-          <div class="px-3 py-1 flex-1 flex flex-col justify-around divide-y divide-border/30">
-            <div class="flex items-center justify-between min-h-7 py-1">
-              <span class="text-muted-foreground">故障代码:</span>
-              <span class="font-mono font-bold" :class="mcu1.mcu_flt_code === 0 ? 'text-success' : 'text-destructive'">
-                {{ mcu1.mcu_flt_code === 0 ? "0x00 (正常)" : `0x${mcu1.mcu_flt_code.toString(16).toUpperCase()} (${activeFaultInfo?.code ?? '未知'})` }}
-              </span>
-            </div>
-            <div class="flex items-center justify-between min-h-7 py-1">
-              <span class="text-muted-foreground">故障等级:</span>
-              <span class="font-medium text-foreground">{{ FAULT_LEVEL_MAP[mcu1.mcu_flt_levl]?.text ?? '无故障' }}</span>
-            </div>
-            <div class="flex items-center justify-between min-h-7 py-1">
-              <span class="text-muted-foreground">记录条数:</span>
-              <span class="font-mono">{{ mcu1.mcu_integ_ctr_flt_num }}</span>
-            </div>
-            <div class="flex items-center justify-between min-h-7 py-1">
-              <span class="text-muted-foreground">通信心跳:</span>
-              <span class="font-mono text-foreground font-semibold">{{ mcu1.mcu_life_1 }}</span>
-            </div>
-          </div>
-        </div>
+      <!-- 通信心跳：Life 计数应持续翻转，灰色表示该报文未在周期内到达 -->
+      <div class="flex flex-wrap items-center gap-2 text-sm">
+        <span class="text-muted-foreground">通信心跳</span>
+        <Badge
+          v-for="beat in heartbeats"
+          :key="beat.id"
+          :variant="beat.fresh ? 'outline' : 'secondary'"
+          class="font-mono"
+        >
+          {{ beat.id }} · {{ beat.fresh ? `Life ${beat.life}` : '无数据' }}
+        </Badge>
       </div>
     </CardContent>
   </Card>

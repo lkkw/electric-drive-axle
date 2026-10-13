@@ -1,6 +1,9 @@
 """Unit tests for AxleManager state management and coordination."""
 
 import asyncio
+import logging
+import time
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -33,6 +36,17 @@ def create_mock_driver() -> MagicMock:
     driver.is_device_open = True
     driver.is_channel_open.return_value = True
     return driver
+
+
+def benign_mcu_2_frame() -> CanRawFrame:
+    """零转速、零转矩、已使能的 0x35B 反馈帧，不会触发任何越限保护。"""
+    return CanRawFrame(
+        can_id=0x35B,
+        data=bytes([0x75, 0x30, 0x2E, 0xE0, 0x75, 0x30, 0x4C, 0x00]),
+        is_extended=False,
+        is_remote=False,
+        timestamp=0,
+    )
 
 
 def test_axle_manager_initial_state() -> None:
@@ -209,7 +223,10 @@ def test_cycle_test_completes_on_server_clock_and_releases_control() -> None:
     """服务端单调时钟应完成步骤，并在完成后安全停机。"""
 
     async def run_test() -> None:
-        manager = AxleManager(driver=create_mock_driver())
+        driver = create_mock_driver()
+        # 模拟 MCU 持续回传 0x35B，满足使能期间的反馈看门狗。
+        driver.receive.side_effect = lambda **_: [benign_mcu_2_frame()]
+        manager = AxleManager(driver=driver)
         await manager.connect(CanConnectRequest())
         await manager.start_cycle_test(
             CycleTestStartRequest(
@@ -262,6 +279,60 @@ def test_axle_manager_emergency_stop() -> None:
         assert cmd.torque_req == 0.0
         assert cmd.speed_req == 0
         assert cmd.gear_sts == VcuGearStatus.N
+
+    asyncio.run(run_test())
+
+
+def test_axle_manager_emergency_reset_releases_interlock() -> None:
+    """急停互锁必须封锁使能与非零控制量，复位只解除封锁而不恢复控制量。"""
+
+    async def run_test() -> None:
+        driver = create_mock_driver()
+        manager = AxleManager(driver=driver)
+        await manager.connect(CanConnectRequest())
+
+        try:
+            await manager.emergency_stop()
+            assert manager.is_emergency_locked
+
+            # 互锁期间：使能与非零控制量一律被拒绝
+            with pytest.raises(CanDriverError):
+                await manager.update_command(VcuCommandUpdateRequest(mcu_en_cmd=VcuMcuEnCmd.ENABLE))
+            with pytest.raises(CanDriverError):
+                await manager.update_command(VcuCommandUpdateRequest(speed_req=3000))
+
+            # 互锁期间：循环测试同样无法取得控制权
+            with pytest.raises(CanDriverError):
+                await manager.start_cycle_test(
+                    CycleTestStartRequest(
+                        steps=[
+                            CycleTestStep(
+                                id="forward",
+                                name="正转",
+                                gear=1,
+                                target_speed=500,
+                                duration_seconds=1,
+                            )
+                        ]
+                    )
+                )
+
+            # 复位只撤销封锁：命令停留在安全值，不会自动重新使能
+            reset_command = await manager.emergency_reset()
+            assert not manager.is_emergency_locked
+            assert reset_command.mcu_en_cmd == VcuMcuEnCmd.DISABLE
+            assert reset_command.torque_req == 0.0
+            assert reset_command.speed_req == 0
+            assert reset_command.gear_sts == VcuGearStatus.N
+            assert reset_command.work_mode_req == VcuWorkModeReq.CLOSE
+
+            # 复位后使能重新放行
+            enabled = await manager.update_command(
+                VcuCommandUpdateRequest(mcu_en_cmd=VcuMcuEnCmd.ENABLE)
+            )
+            assert enabled.mcu_en_cmd == VcuMcuEnCmd.ENABLE
+        finally:
+            await manager.disconnect()
 
     asyncio.run(run_test())
 
@@ -639,3 +710,196 @@ def test_default_baud_rate_configuration() -> None:
     manager = AxleManager(driver=create_mock_driver())
     telemetry = manager.get_telemetry()
     assert telemetry.baud_rate == 500000
+
+
+def test_feedback_watchdog_trips_when_enabled_without_mcu_2() -> None:
+    """使能后 0x35B 反馈中断超过阈值，必须触发自动急停并记录事件。"""
+
+    async def run_test() -> None:
+        manager = AxleManager(driver=create_mock_driver())
+        await manager.update_safety_config(AxleSafetyConfig(feedback_timeout_ms=100))
+        await manager.connect(CanConnectRequest())
+        try:
+            await manager.update_command(
+                VcuCommandUpdateRequest(mcu_en_cmd=1, work_mode_req=3, speed_req=0)
+            )
+            await asyncio.sleep(0.25)
+
+            telemetry = manager.get_telemetry()
+            assert manager.is_emergency_locked
+            assert telemetry.command.mcu_en_cmd == 0
+            assert telemetry.safety.last_trip is not None
+            assert telemetry.safety.last_trip.metric == "feedback_timeout"
+            assert telemetry.safety.last_trip.unit == "ms"
+            assert telemetry.safety.last_trip.threshold == 100
+        finally:
+            await manager.disconnect()
+
+    asyncio.run(run_test())
+
+
+def test_feedback_watchdog_ignores_disabled_state_and_fresh_feedback() -> None:
+    """未使能时不判定；使能且持续收到 0x35B 时不误触发。"""
+
+    async def run_test() -> None:
+        driver = create_mock_driver()
+        manager = AxleManager(driver=driver)
+        await manager.update_safety_config(AxleSafetyConfig(feedback_timeout_ms=100))
+        await manager.connect(CanConnectRequest())
+        try:
+            await asyncio.sleep(0.2)
+            assert not manager.is_emergency_locked
+
+            driver.receive.side_effect = lambda **_: [benign_mcu_2_frame()]
+            await manager.update_command(VcuCommandUpdateRequest(mcu_en_cmd=1))
+            await asyncio.sleep(0.25)
+            assert not manager.is_emergency_locked
+            assert manager.get_telemetry().safety.last_trip is None
+        finally:
+            await manager.disconnect()
+
+    asyncio.run(run_test())
+
+
+def test_tx_loop_realigns_after_stall_instead_of_bursting() -> None:
+    """发送卡顿恢复后应丢弃错过的节拍，而不是连续补发一串报文。"""
+
+    async def run_test() -> None:
+        driver = create_mock_driver()
+        send_times: list[float] = []
+        stall_end: float | None = None
+
+        async def slow_once(**_: object) -> bool:
+            nonlocal stall_end
+            if len(send_times) == 3 and stall_end is None:
+                await asyncio.sleep(0.15)
+                stall_end = time.perf_counter()
+            send_times.append(time.perf_counter())
+            return True
+
+        driver.transmit.side_effect = slow_once
+        manager = AxleManager(driver=driver)
+        await manager.connect(CanConnectRequest())
+        await asyncio.sleep(0.35)
+        await manager.disconnect()
+
+        assert stall_end is not None
+        burst = [t for t in send_times if stall_end <= t < stall_end + 0.03]
+        # 正常节拍下 30 ms 内约 3~4 帧；未对齐时会集中补发约 15 帧。
+        assert len(burst) <= 5
+
+    asyncio.run(run_test())
+
+
+def test_link_failure_auto_disconnects_and_reports_reason() -> None:
+    """驱动连续抛出异常时自动停止通信、结束循环测试并上报链路故障。"""
+
+    async def run_test() -> None:
+        driver = create_mock_driver()
+        driver.receive.side_effect = lambda **_: [benign_mcu_2_frame()]
+        manager = AxleManager(driver=driver)
+        await manager.connect(CanConnectRequest())
+        await manager.start_cycle_test(
+            CycleTestStartRequest(
+                steps=[
+                    CycleTestStep(
+                        id="forward",
+                        name="正转",
+                        gear=1,
+                        target_speed=100,
+                        duration_seconds=10,
+                    )
+                ]
+            )
+        )
+
+        driver.transmit.side_effect = CanDriverError("USB 已拔出")
+        await asyncio.sleep(0.8)
+
+        telemetry = manager.get_telemetry()
+        assert not manager.is_connected
+        assert telemetry.link_error is not None
+        assert "USB 已拔出" in telemetry.link_error
+        assert telemetry.cycle_test.status == "error"
+        assert telemetry.command.mcu_en_cmd == 0
+        driver.close_device.assert_awaited()
+
+        # 重新连接成功后清除链路故障。
+        driver.transmit.side_effect = None
+        await manager.connect(CanConnectRequest())
+        assert manager.get_telemetry().link_error is None
+        await manager.disconnect()
+
+    asyncio.run(run_test())
+
+
+def test_broadcasts_periodically_without_rx_frames() -> None:
+    """总线无报文时也必须按固定节拍推送快照。"""
+
+    async def run_test() -> None:
+        manager = AxleManager(driver=create_mock_driver())
+        queue = manager.subscribe()
+        await manager.connect(CanConnectRequest())
+        try:
+            await asyncio.sleep(0.2)
+            assert queue.qsize() >= 3
+        finally:
+            await manager.disconnect()
+            manager.unsubscribe(queue)
+
+    asyncio.run(run_test())
+
+
+def test_reconnect_waits_for_previous_tasks() -> None:
+    """重连必须等旧收发任务完全退出后才释放并重新打开设备。"""
+
+    async def run_test() -> None:
+        driver = create_mock_driver()
+        manager = AxleManager(driver=driver)
+        await manager.connect(CanConnectRequest())
+        old_tasks = (manager._tx_task, manager._rx_task)
+
+        await manager.connect(CanConnectRequest(baud_rate=250000))
+        assert all(task is not None and task.done() for task in old_tasks)
+        assert manager.is_connected
+        assert driver.open_device.await_count == 2
+        await manager.disconnect()
+
+    asyncio.run(run_test())
+
+
+def test_safety_config_persists_across_instances(tmp_path: Path) -> None:
+    """阈值保存后，新实例应从文件恢复；损坏文件回退默认值。"""
+    config_path = tmp_path / "safety_config.json"
+
+    async def run_test() -> None:
+        first = AxleManager(driver=create_mock_driver(), safety_config_path=config_path)
+        await first.update_safety_config(
+            AxleSafetyConfig(
+                max_motor_speed_rpm=4200,
+                max_motor_torque_nm=55.5,
+                max_motor_temp_c=120.0,
+                feedback_timeout_ms=750,
+            )
+        )
+
+    asyncio.run(run_test())
+
+    restored = AxleManager(driver=create_mock_driver(), safety_config_path=config_path)
+    config = restored.get_safety_config()
+    assert config.max_motor_speed_rpm == 4200
+    assert config.max_motor_torque_nm == 55.5
+    assert config.feedback_timeout_ms == 750
+
+    config_path.write_text("{not json", encoding="utf-8")
+    fallback = AxleManager(driver=create_mock_driver(), safety_config_path=config_path)
+    assert fallback.get_safety_config() == AxleSafetyConfig()
+
+
+def test_log_throttle_suppresses_repeated_warnings(caplog: pytest.LogCaptureFixture) -> None:
+    """高频同类告警在节流窗口内只输出一次。"""
+    manager = AxleManager(driver=create_mock_driver())
+    with caplog.at_level(logging.WARNING, logger="app.axle_manager"):
+        for _ in range(20):
+            manager._log_throttled("demo", logging.WARNING, "重复告警 %d", 1)
+    assert len([r for r in caplog.records if "重复告警" in r.getMessage()]) == 1

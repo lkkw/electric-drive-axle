@@ -158,12 +158,7 @@ function handleResetToDefault() {
       v-if="!cycle.isIdle.value || cycle.status.value === 'completed'"
     >
       <AlertTitle class="flex items-center justify-between">
-        <div class="flex items-center gap-2">
-          <Badge :variant="statusBadgeVariant">{{ statusText }}</Badge>
-          <span class="text-xs text-muted-foreground font-mono">
-            第 {{ cycle.currentLoop.value }} / {{ cycle.executionTotalLoops.value }} 圈
-          </span>
-        </div>
+        <Badge :variant="statusBadgeVariant">{{ statusText }}</Badge>
 
         <div class="flex items-center gap-1 text-xs text-muted-foreground font-mono">
           <ClockIcon class="size-3.5" />
@@ -341,7 +336,7 @@ function handleResetToDefault() {
           size="sm"
           variant="default"
           class="h-10 w-full"
-          :disabled="!axleStore.isConnected || axleStore.cycleLoading"
+          :disabled="!axleStore.isConnected || axleStore.cycleLoading || axleStore.isEmergencyLocked"
           @click="cycle.startTest"
         >
           <Spinner v-if="axleStore.cycleLoading" data-icon="inline-start" />

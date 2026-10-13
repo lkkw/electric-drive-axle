@@ -1,12 +1,31 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from "vue";
-import { AlertOctagonIcon, SendIcon } from "@lucide/vue";
+import {
+  AlertOctagonIcon,
+  AlertTriangleIcon,
+  RotateCcwIcon,
+  SendIcon,
+} from "@lucide/vue";
 import { toast } from "vue-sonner";
 
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupInput,
+  InputGroupText,
+} from "@/components/ui/input-group";
 import {
   Select,
   SelectContent,
@@ -17,10 +36,14 @@ import {
 } from "@/components/ui/select";
 import {
   Field,
+  FieldContent,
+  FieldDescription,
   FieldError,
   FieldGroup,
   FieldLabel,
+  FieldTitle,
 } from "@/components/ui/field";
+import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import CycleTestPanel from "@/components/axle/CycleTestPanel.vue";
 import { useCycleTest } from "@/composables/useCycleTest";
@@ -37,7 +60,14 @@ const activeTab = ref("manual");
 const isManualLocked = computed(
   () => cycleTest.isRunning.value || cycleTest.isPaused.value,
 );
-const SELECTABLE_GEAR_IDS = [1, 2, 3, 4] as const;
+/** 急停互锁：后端已置位，会拒绝使能与所有非零控制量，必须显式复位 */
+const isEmergencyLocked = computed(() => axleStore.isEmergencyLocked);
+/** 手动控制整体受阻：循环测试持有控制权，或急停互锁尚未解除 */
+const isCommandBlocked = computed(
+  () => isManualLocked.value || isEmergencyLocked.value,
+);
+/** 空载台架只使用 D / R / N 三个挡位 */
+const SELECTABLE_GEAR_IDS = [1, 2, 3] as const;
 const TARGET_INPUT_ID = "motor-target-value";
 
 // 本地控制指令表单
@@ -46,11 +76,13 @@ const form = reactive({
   work_mode_req: 3, // 速度模式
   mcu_en_cmd: 0, // 0: 未使能, 1: 使能
   gear_sts: 3, // 3: 空挡 N
-  active_discharge: 0,
 });
 
 // 目标值编辑状态：编辑期间不让实时推送覆盖尚未下发的模式和目标值。
 const isTargetEditing = ref(false);
+
+// 解除急停互锁的二次确认弹窗
+const isResetDialogOpen = ref(false);
 
 watch(isManualLocked, (locked) => {
   if (locked) activeTab.value = "cycle";
@@ -70,6 +102,17 @@ function notifyCommandError(action: string, error: unknown) {
 }
 
 const isTorqueMode = computed(() => form.work_mode_req === 1);
+/** 后端当前工作模式：急停或循环测试结束后会被统一归零为 0 (关闭) */
+const backendWorkMode = computed(
+  () => axleStore.telemetry.command.work_mode_req,
+);
+const backendWorkModeLabel = computed(
+  () => WORK_MODE_MAP[backendWorkMode.value] ?? "未知",
+);
+/** 后端模式是否属于手动可选模式；归零后需提示操作员重新选择再下发 */
+const isBackendWorkModeSelectable = computed(
+  () => backendWorkMode.value === 1 || backendWorkMode.value === 3,
+);
 const targetConfig = computed(() =>
   isTorqueMode.value
     ? {
@@ -114,7 +157,6 @@ watch(
   (newCmd) => {
     form.mcu_en_cmd = newCmd.mcu_en_cmd;
     form.gear_sts = newCmd.gear_sts;
-    form.active_discharge = newCmd.active_discharge;
 
     if (!isTargetEditing.value) {
       syncTargetFromCommand(newCmd);
@@ -128,7 +170,7 @@ async function handleApplyTarget() {
   if (
     !axleStore.isConnected ||
     axleStore.loading ||
-    isManualLocked.value ||
+    isCommandBlocked.value ||
     isTargetInvalid.value
   ) {
     return;
@@ -157,7 +199,7 @@ async function handleApplyTarget() {
 
 /** 切换使能状态（带防飞车保护） */
 async function handleToggleEnable() {
-  if (!axleStore.isConnected || axleStore.loading || isManualLocked.value) {
+  if (!axleStore.isConnected || axleStore.loading || isCommandBlocked.value) {
     return;
   }
 
@@ -198,7 +240,7 @@ async function handleSetGear(value: unknown) {
   if (!SELECTABLE_GEAR_IDS.some((gearId) => gearId === gear)) {
     return;
   }
-  if (!axleStore.isConnected || axleStore.loading || isManualLocked.value) {
+  if (!axleStore.isConnected || axleStore.loading || isCommandBlocked.value) {
     return;
   }
 
@@ -225,7 +267,7 @@ async function handleSetMode(value: unknown) {
   if (mode !== 1 && mode !== 3) {
     return;
   }
-  if (!axleStore.isConnected || axleStore.loading || isManualLocked.value) {
+  if (!axleStore.isConnected || axleStore.loading || isCommandBlocked.value) {
     return;
   }
 
@@ -255,60 +297,28 @@ async function handleSetMode(value: unknown) {
   }
 }
 
-/** 主动放电只提交自身状态，避免顺带下发尚未确认的目标值。 */
-async function handleToggleDischarge() {
-  if (!axleStore.isConnected || axleStore.loading || isManualLocked.value) {
-    return;
-  }
-
-  const previousDischarge = form.active_discharge;
-  const shouldStartDischarge = form.active_discharge !== 1;
-  form.active_discharge = shouldStartDischarge ? 1 : 0;
-
-  try {
-    await axleStore.sendCommand({
-      active_discharge: form.active_discharge,
-    });
-    toast.success(
-      shouldStartDischarge ? "主动放电指令已下发" : "停止放电指令已下发",
-    );
-  } catch (error) {
-    form.active_discharge = previousDischarge;
-    notifyCommandError(shouldStartDischarge ? "触发放电" : "停止放电", error);
-  }
-}
-
-/** 一键紧急停机 */
-async function handleEmergencyStop() {
-  if (!axleStore.isConnected) {
-    return;
-  }
-
-  const previousState = {
-    targetValue: form.target_value,
-    enable: form.mcu_en_cmd,
-    gear: form.gear_sts,
-    discharge: form.active_discharge,
-    editing: isTargetEditing.value,
-  };
-
-  isTargetEditing.value = false;
-  form.mcu_en_cmd = 0;
-  form.target_value = 0;
-  form.gear_sts = 3; // N
-  form.active_discharge = 0;
-
-  try {
-    await axleStore.triggerEmergencyStop();
+// 急停入口位于全局顶部栏；互锁生效时放弃尚未下发的目标值编辑，表单回到后端安全值。
+watch(isEmergencyLocked, (locked) => {
+  if (locked) {
+    isTargetEditing.value = false;
     syncTargetFromCommand(axleStore.telemetry.command);
-    toast.warning("紧急停机指令已下发");
+  }
+});
+
+/**
+ * 解除急停互锁：仅撤销后端封锁，不会重新使能或恢复停机前的控制量。
+ * 复位成功后目标值与挡位仍需操作员重新下发。
+ */
+async function handleEmergencyReset() {
+  try {
+    await axleStore.resetEmergencyStop();
+    isResetDialogOpen.value = false;
+    syncTargetFromCommand(axleStore.telemetry.command);
+    toast.success("急停互锁已解除", {
+      description: "请重新选择工作模式与目标值后下发。",
+    });
   } catch (error) {
-    form.target_value = previousState.targetValue;
-    form.mcu_en_cmd = previousState.enable;
-    form.gear_sts = previousState.gear;
-    form.active_discharge = previousState.discharge;
-    isTargetEditing.value = previousState.editing;
-    notifyCommandError("紧急停机", error);
+    notifyCommandError("解除急停互锁", error);
   }
 }
 </script>
@@ -317,9 +327,7 @@ async function handleEmergencyStop() {
   <Tabs v-model="activeTab" class="h-full flex flex-col">
     <Card class="border-border shadow-xs h-full flex flex-col">
       <CardHeader class="pb-3 border-b bg-muted/20">
-        <div
-          class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between min-h-7"
-        >
+        <div class="flex min-h-7 items-center">
           <!-- 标题区域替换为手动控制与循环测试 Tabs 切换按钮，最大化节约垂直空间 -->
           <div class="flex items-center gap-2">
             <CardTitle class="sr-only">电驱控制</CardTitle>
@@ -345,19 +353,67 @@ async function handleEmergencyStop() {
               </TabsTrigger>
             </TabsList>
           </div>
-
-          <Button
-            size="sm"
-            variant="outline"
-            class="w-full shrink-0 justify-center font-semibold px-3 border-destructive/40 bg-destructive/10 text-destructive hover:bg-destructive hover:text-destructive-foreground hover:border-destructive transition-all active:scale-[0.98] sm:w-auto"
-            :disabled="!axleStore.isConnected"
-            @click="handleEmergencyStop"
-          >
-            <AlertOctagonIcon data-icon="inline-start" />
-            <span>紧急停机</span>
-          </Button>
         </div>
+
+        <!-- 急停互锁状态条：互锁未解除前，后端会拒绝使能、非零控制量与循环测试 -->
+        <Alert v-if="isEmergencyLocked" variant="destructive" class="mt-3">
+          <AlertOctagonIcon />
+          <AlertTitle>急停互锁已生效，控制输出已封锁</AlertTitle>
+          <AlertDescription class="flex flex-col items-start gap-2">
+            <span>
+              使能已关闭，目标转矩与转速归零，挡位已挂空挡。互锁解除前无法使能、下发非零控制量或启动循环测试。
+            </span>
+            <Button
+              size="sm"
+              variant="outline"
+              :disabled="axleStore.loading"
+              @click="isResetDialogOpen = true"
+            >
+              <RotateCcwIcon data-icon="inline-start" />
+              <span>解除急停互锁</span>
+            </Button>
+          </AlertDescription>
+        </Alert>
       </CardHeader>
+
+      <!-- 解除互锁必须二次确认；复位本身不会重新使能，也不会恢复停机前的控制量 -->
+      <Dialog v-model:open="isResetDialogOpen">
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>解除急停互锁</DialogTitle>
+            <DialogDescription>
+              复位只撤销封锁，不会自动重新使能或恢复停机前的目标值。
+            </DialogDescription>
+          </DialogHeader>
+
+          <Alert>
+            <AlertTriangleIcon />
+            <AlertTitle>复位前请确认</AlertTitle>
+            <AlertDescription>
+              电机已停稳、人员已撤离危险区域，且触发停机的原因（转速 / 转矩 / 温度越限或 MCU 反馈中断）已经消除。若越限条件仍然存在，复位后会立即再次触发自动停机；重新使能后若仍收不到 MCU 反馈，也会再次停机。
+            </AlertDescription>
+          </Alert>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              :disabled="axleStore.loading"
+              @click="isResetDialogOpen = false"
+            >
+              取消
+            </Button>
+            <Button
+              variant="destructive"
+              :disabled="axleStore.loading"
+              @click="handleEmergencyReset"
+            >
+              <Spinner v-if="axleStore.loading" data-icon="inline-start" />
+              <RotateCcwIcon v-else data-icon="inline-start" />
+              <span>确认复位</span>
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <TabsContent
         value="manual"
@@ -365,45 +421,30 @@ async function handleEmergencyStop() {
         class="data-[state=inactive]:hidden flex-1 flex flex-col m-0"
       >
         <CardContent class="p-4 sm:p-5 flex-1 flex flex-col gap-4">
-      <!-- 使能与主动放电操作：实际反馈集中展示在 MCU 实时反馈卡片。 -->
-      <div
-        class="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3 bg-muted/25 rounded-xl border border-border/60"
-      >
+      <!-- 使能操作：实际使能反馈集中展示在 MCU 实时反馈卡片。 -->
+      <Field orientation="horizontal" class="rounded-lg border p-3">
+        <FieldContent>
+          <FieldTitle>MCU 使能</FieldTitle>
+          <FieldDescription>开启使能时目标转矩与转速强制归零。</FieldDescription>
+        </FieldContent>
         <Button
           size="sm"
           :variant="form.mcu_en_cmd === 1 ? 'success' : 'outline'"
-          class="h-10 w-full px-4 font-semibold transition-all"
-          :disabled="!axleStore.isConnected || axleStore.loading || isManualLocked"
+          class="h-9 w-28"
+          :disabled="!axleStore.isConnected || axleStore.loading || isCommandBlocked"
           @click="handleToggleEnable"
         >
           {{ form.mcu_en_cmd === 1 ? "关闭使能" : "开启使能" }}
         </Button>
-
-        <Button
-          size="sm"
-          :variant="form.active_discharge === 1 ? 'warning' : 'outline'"
-          class="h-10 w-full px-4 font-semibold transition-all"
-          :disabled="!axleStore.isConnected || axleStore.loading || isManualLocked"
-          @click="handleToggleDischarge"
-        >
-          {{ form.active_discharge === 1 ? "停止放电" : "触发放电" }}
-        </Button>
-      </div>
+      </Field>
 
       <FieldGroup class="flex flex-col gap-4">
         <!-- 挡位选择 -->
         <Field>
-          <div class="flex items-center justify-between">
-            <FieldLabel class="text-xs font-semibold text-muted-foreground">
-              挡位选择
-            </FieldLabel>
-            <span class="text-xs font-mono text-info font-semibold">
-              当前: {{ GEAR_MAP[form.gear_sts] ?? "未知" }}
-            </span>
-          </div>
+          <FieldLabel>挡位选择</FieldLabel>
           <Select
             :model-value="String(form.gear_sts)"
-            :disabled="!axleStore.isConnected || axleStore.loading || isManualLocked"
+            :disabled="!axleStore.isConnected || axleStore.loading || isCommandBlocked"
             @update:model-value="handleSetGear"
           >
             <SelectTrigger class="h-9 w-full" aria-label="挡位选择">
@@ -426,16 +467,15 @@ async function handleEmergencyStop() {
         <!-- 控制工作模式 -->
         <Field>
           <div class="flex items-center justify-between">
-            <FieldLabel class="text-xs font-semibold text-muted-foreground">
-              工作模式
-            </FieldLabel>
-            <span class="text-xs font-mono text-info font-semibold">
-              当前: {{ WORK_MODE_MAP[axleStore.telemetry.command.work_mode_req] ?? "未知" }}
+            <FieldLabel>工作模式</FieldLabel>
+            <!-- 仅在急停/循环结束后被归零为“关闭”时提示，正常情况下选择框即为当前模式 -->
+            <span v-if="!isBackendWorkModeSelectable" class="text-xs text-warning">
+              当前为{{ backendWorkModeLabel }}，需重新选择下发
             </span>
           </div>
           <Select
             :model-value="String(form.work_mode_req)"
-            :disabled="!axleStore.isConnected || axleStore.loading || isManualLocked"
+            :disabled="!axleStore.isConnected || axleStore.loading || isCommandBlocked"
             @update:model-value="handleSetMode"
           >
             <SelectTrigger class="h-9 w-full" aria-label="工作模式">
@@ -457,13 +497,10 @@ async function handleEmergencyStop() {
         <!-- 根据工作模式展示目标值输入与下发 -->
         <Field
           :data-invalid="isTargetInvalid || undefined"
-          :data-disabled="!axleStore.isConnected || isManualLocked || undefined"
+          :data-disabled="!axleStore.isConnected || isCommandBlocked || undefined"
         >
           <div class="flex items-center justify-between">
-            <FieldLabel
-              :for="TARGET_INPUT_ID"
-              class="text-xs font-semibold text-muted-foreground"
-            >
+            <FieldLabel :for="TARGET_INPUT_ID">
               {{ targetConfig.label }}
             </FieldLabel>
             <span class="text-xs text-muted-foreground font-mono">
@@ -472,8 +509,8 @@ async function handleEmergencyStop() {
             </span>
           </div>
 
-          <div class="relative w-full">
-            <Input
+          <InputGroup class="h-9">
+            <InputGroupInput
               :id="TARGET_INPUT_ID"
               v-model.number="form.target_value"
               type="number"
@@ -481,19 +518,17 @@ async function handleEmergencyStop() {
               :min="targetConfig.min"
               :max="targetConfig.max"
               :placeholder="targetConfig.placeholder"
-              class="h-9 w-full px-3 pr-12 font-mono font-bold tracking-tight [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-inner-spin-button]:m-0"
+              class="font-mono [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
               :aria-invalid="isTargetInvalid || undefined"
-               :disabled="!axleStore.isConnected || isManualLocked"
+              :disabled="!axleStore.isConnected || isCommandBlocked"
               @focus="isTargetEditing = true"
               @keydown.enter.prevent="handleApplyTarget"
               @wheel.prevent
             />
-            <div
-              class="absolute inset-y-0 right-3 flex items-center pointer-events-none text-xs font-semibold text-muted-foreground font-mono"
-            >
-              {{ targetConfig.unit }}
-            </div>
-          </div>
+            <InputGroupAddon align="inline-end">
+              <InputGroupText class="font-mono">{{ targetConfig.unit }}</InputGroupText>
+            </InputGroupAddon>
+          </InputGroup>
 
           <FieldError v-if="isTargetInvalid">
             {{ targetConfig.label }}超出有效量程！请输入
@@ -507,9 +542,9 @@ async function handleEmergencyStop() {
         <Button
           size="default"
           variant="default"
-          class="h-10 w-full justify-center px-4 font-semibold shadow-xs transition-all active:scale-[0.99]"
+          class="h-10 w-full"
           :disabled="
-            isTargetInvalid || axleStore.loading || !axleStore.isConnected || isManualLocked
+            isTargetInvalid || axleStore.loading || !axleStore.isConnected || isCommandBlocked
           "
           @click="handleApplyTarget"
         >

@@ -1,7 +1,7 @@
 [project]
 name = "electric-drive-axle-backend"
-version = "0.1.0"
-description = "A production-friendly FastAPI scaffold with REST and SSE examples."
+version = "1.0.0"
+description = "株齿 2.5T 电驱桥下线测试上位机后端 (FastAPI + 周立功 USBCAN)。"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

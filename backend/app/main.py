@@ -1,5 +1,6 @@
 """FastAPI application factory and ASGI entry point."""
 
+import logging
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -9,6 +10,7 @@ from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import get_settings
+from app.core.logging_setup import configure_logging
 from app.routers import axle
 from app.services.axle_manager import get_axle_manager
 
@@ -38,7 +40,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     应用启动时执行 yield 前逻辑；应用关闭时执行 yield 后逻辑，
     确保在后台服务或桌面端退出时，安全下发停机指令并释放周立功 USBCAN 设备句柄。
     """
-    # 启动阶段
+    # 启动阶段：日志落盘（幂等，桌面入口可能已提前配置）
+    settings = get_settings()
+    configure_logging(settings.log_dir)
+    logging.getLogger("app").info("%s v%s 启动", settings.app_name, settings.app_version)
     yield
 
     # 关闭阶段：安全清理电驱桥 CAN 硬件连接与底层驱动线程池
@@ -58,9 +63,7 @@ def create_app(
     it and serves the bundled build from the same random local port.
     """
     settings = get_settings()
-    description = (
-        "株齿2.5T电驱桥下线测试上位机系统，集成周立功 USBCAN 硬件驱动与 SSE 实时遥测流。"
-    )
+    description = "株齿2.5T电驱桥下线测试上位机系统，集成周立功 USBCAN 硬件驱动与 SSE 实时遥测流。"
     application = FastAPI(
         title=settings.app_name,
         version=settings.app_version,
@@ -82,7 +85,7 @@ def create_app(
 
     @application.get("/health", tags=["Health"], summary="健康检查")
     async def health_check() -> dict[str, str]:
-        return {"status": "ok"}
+        return {"status": "ok", "version": settings.app_version}
 
     if serve_frontend:
         static_dir = Path(frontend_dir) if frontend_dir is not None else DEFAULT_FRONTEND_DIR

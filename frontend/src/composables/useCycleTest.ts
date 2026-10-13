@@ -167,6 +167,10 @@ export function useCycleTest() {
       toast.error('CAN 未连接，无法启动循环测试')
       return
     }
+    if (axleStore.isEmergencyLocked) {
+      toast.error('系统处于急停互锁状态，请先在控制台解除急停互锁')
+      return
+    }
     const request = buildRequest()
     if (!request) return
     try {

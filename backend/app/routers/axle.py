@@ -252,8 +252,15 @@ async def update_safety_config(
     config: AxleSafetyConfig,
     manager: AxleManagerDep,
 ) -> AxleSafetyConfig:
-    """保存自动停机配置；仅后续新鲜 MCU 反馈会参与越限判定。"""
-    return await manager.update_safety_config(config)
+    """保存自动停机配置并持久化；仅后续新鲜 MCU 反馈会参与越限判定。"""
+    try:
+        return await manager.update_safety_config(config)
+    except OSError as err:
+        logger.error("安全配置写入本地文件失败: %s", err)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"安全配置已在本次运行中生效，但写入本地文件失败，重启后将丢失: {err}",
+        ) from err
 
 
 @router.post(
@@ -270,12 +277,18 @@ async def emergency_stop(
 
 @router.post(
     "/emergency-reset",
+    response_model=VcuCommandState,
     summary="复位急停互锁",
 )
 async def emergency_reset(
     manager: AxleManagerDep,
 ) -> VcuCommandState:
-    """解除急停锁定，允许后续正常控制指令。"""
+    """解除急停锁定，允许后续正常控制指令。
+
+    仅解除互锁标志，不会自动恢复使能与停机前的控制量；复位后仍处于使能关闭、
+    目标归零、空挡状态，必须由操作员重新下发。越限原因未消除时，下一次新鲜
+    MCU 反馈会立即再次触发自动停机。
+    """
     return await manager.emergency_reset()
 
 

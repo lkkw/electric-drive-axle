@@ -2,56 +2,23 @@
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
 
-import {
-  Breadcrumb,
-  BreadcrumbItem,
-  BreadcrumbList,
-  BreadcrumbPage,
-  BreadcrumbSeparator,
-} from '@/components/ui/breadcrumb'
-import { Separator } from '@/components/ui/separator'
+import EmergencyStopButton from '@/components/axle/EmergencyStopButton.vue'
 import { SidebarTrigger } from '@/components/ui/sidebar'
+import { SITE_HEADER_ACTIONS_ID } from './headerActions'
 
 const route = useRoute()
 
-// 路由 -> 面包屑文案
-const pageTitles: Record<string, { group: string; page: string }> = {
-  '/': { group: '测控系统', page: 'CAN 通讯控制' },
-  '/can': { group: '测控系统', page: 'CAN 通讯控制' },
-  '/axle': { group: '测试台架', page: '电驱桥控制台' },
-  '/safety': { group: '安全保护', page: '安全配置' },
-}
-
-const currentPage = computed(
-  () =>
-    pageTitles[route.path] ?? {
-      group: '测试台架',
-      page: '控制系统',
-    },
-)
+const pageTitle = computed(() => (route.meta.title as string | undefined) ?? '')
 </script>
 
 <template>
   <header
-    class="flex h-16 shrink-0 items-center gap-2 transition-[width,height] ease-linear group-has-data-[collapsible=icon]/sidebar-wrapper:h-12"
+    class="flex h-16 shrink-0 items-center gap-3 px-4 transition-[width,height] ease-linear sm:px-6 group-has-data-[collapsible=icon]/sidebar-wrapper:h-12"
   >
-    <div class="flex items-center gap-2 px-4 sm:px-6">
-      <SidebarTrigger class="-ml-1" />
-      <Separator
-        orientation="vertical"
-        class="mr-2 data-[orientation=vertical]:h-4"
-      />
-      <Breadcrumb>
-        <BreadcrumbList>
-          <BreadcrumbItem class="hidden md:block">
-            {{ currentPage.group }}
-          </BreadcrumbItem>
-          <BreadcrumbSeparator class="hidden md:block" />
-          <BreadcrumbItem>
-            <BreadcrumbPage>{{ currentPage.page }}</BreadcrumbPage>
-          </BreadcrumbItem>
-        </BreadcrumbList>
-      </Breadcrumb>
-    </div>
+    <SidebarTrigger class="-ml-1" />
+    <h1 class="truncate text-lg font-semibold text-foreground">{{ pageTitle }}</h1>
+    <div :id="SITE_HEADER_ACTIONS_ID" class="ml-auto flex shrink-0 items-center gap-2" />
+    <!-- 全局急停：任何页面都可一键触发 -->
+    <EmergencyStopButton />
   </header>
 </template>

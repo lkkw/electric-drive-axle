@@ -1,9 +1,10 @@
 """Electric Drive Axle State Manager and Communication Coordinator.
 
 Manages:
-- CAN hardware lifecycle (connect, disconnect, channel setup).
+- CAN hardware lifecycle (connect, disconnect, channel setup, link-failure auto stop).
 - Real-time 10ms high-precision transmission task (VCU_11, ID 0x258).
 - Real-time high-throughput receive task and bitwise decoding (0x35A, 0x35B, 0x35C).
+- Safety supervision (threshold trips and MCU feedback watchdog).
 - Thread-safe state synchronization and SSE subscription broadcast.
 """
 
@@ -13,6 +14,8 @@ import math
 import time
 from collections import deque
 from datetime import UTC, datetime
+from pathlib import Path
+from typing import NamedTuple
 
 from app.core.can.codec import (
     decode_mcu_motor_1,
@@ -24,7 +27,15 @@ from app.core.can.constants import (
     CAN_ID_VCU_11,
     ZcanDeviceType,
 )
-from app.core.can.driver import CanDriverError, ZlgCanDriver, windows_high_resolution_timer
+from app.core.can.driver import (
+    CanDriverError,
+    CanRawFrame,
+    UnavailableCanDriver,
+    ZlgCanDriver,
+    windows_high_resolution_timer,
+)
+from app.core.config import get_settings
+from app.core.logging_setup import EVENT_LOGGER_NAME
 from app.schemas.axle import (
     AxleSafetyConfig,
     AxleSafetyStatus,
@@ -38,11 +49,16 @@ from app.schemas.axle import (
     McuDriveMotor1Telemetry,
     McuDriveMotor2Telemetry,
     McuTboxTelemetry,
+    SafetyMetric,
+    SafetyUnit,
     VcuCommandState,
     VcuCommandUpdateRequest,
 )
+from app.services.safety_store import load_safety_config, save_safety_config
 
 logger = logging.getLogger("app.axle_manager")
+# 关键操作与安全事件单独落盘 (events.log)，用于产线追溯。
+events = logging.getLogger(EVENT_LOGGER_NAME)
 
 # 自动停机只接受近期成功解码的反馈，避免使用断线前残留的遥测值。
 MCU_2_SAFETY_FRESHNESS_SECONDS = 0.5
@@ -50,14 +66,71 @@ MCU_TBOX_SAFETY_FRESHNESS_SECONDS = 1.0
 SHUTDOWN_FRAME_COUNT = 2
 SHUTDOWN_FRAME_TIMEOUT_SECONDS = 0.2
 STREAM_FRAME_LIMIT = 200
+RECENT_FRAME_CAPACITY = 500
+
+# 10ms 控制周期。
+TX_INTERVAL_SECONDS = 0.010
+# 接收轮询间隔。
+RX_POLL_INTERVAL_SECONDS = 0.005
+# SSE 推送节拍：无论总线上有无报文都按此频率推送，保证计数器与状态实时可见。
+BROADCAST_INTERVAL_SECONDS = 0.050
+
+# 同一收发源连续驱动异常达到任一条件即判定硬件链路失效并自动停止通信。
+LINK_FAILURE_ERROR_COUNT = 10
+LINK_FAILURE_SECONDS = 1.0
+# 同类高频告警日志的最小输出间隔，避免 10ms 循环刷屏。
+LOG_THROTTLE_SECONDS = 1.0
+
+SAFETY_METRIC_LABELS: dict[SafetyMetric, str] = {
+    "motor_speed": "实际转速",
+    "motor_torque": "实际转矩",
+    "motor_temperature": "电机温度",
+    "feedback_timeout": "MCU_2 反馈中断",
+}
+
+
+class _FrameRecord(NamedTuple):
+    """报文监视缓冲区内的轻量记录，仅在生成快照时才转换为 Pydantic 模型。"""
+
+    sequence: int
+    wall_time: float
+    direction: str
+    can_id: int
+    data: bytes
+    name: str
+
+
+class _SafetyViolation(NamedTuple):
+    metric: SafetyMetric
+    actual_value: float
+    threshold: float
+    unit: SafetyUnit
 
 
 class AxleManager:
     """电驱桥上位机系统核心管理器 (单例生命周期)。"""
 
-    def __init__(self, driver: ZlgCanDriver | None = None) -> None:
-        """初始化管理器。"""
-        self._driver = driver or ZlgCanDriver()
+    def __init__(
+        self,
+        driver: ZlgCanDriver | None = None,
+        *,
+        safety_config_path: Path | None = None,
+    ) -> None:
+        """初始化管理器。
+
+        :param driver: CAN 驱动实例，缺省时加载周立功动态库
+        :param safety_config_path: 自动停机阈值持久化文件；为 None 时仅保存在内存
+        """
+        # 动态库加载失败时程序仍需启动，以便在界面上展示原因而不是让所有接口报 500。
+        self._driver_error: str | None = None
+        if driver is None:
+            try:
+                driver = ZlgCanDriver()
+            except (CanDriverError, FileNotFoundError, RuntimeError) as err:
+                self._driver_error = str(err)
+                logger.error("CAN 驱动加载失败: %s", err)
+                driver = UnavailableCanDriver(str(err))
+        self._driver = driver
         self._lock = asyncio.Lock()
         self._lifecycle_lock = asyncio.Lock()
 
@@ -92,13 +165,22 @@ class AxleManager:
         self._mcu_1_last_rx_timestamp: float | None = None
         self._mcu_2_last_rx_timestamp: float | None = None
         self._mcu_tbox_last_rx_timestamp: float | None = None
-        self._recent_frames: deque[CanFrameItem] = deque(maxlen=500)
+        self._recent_frames: deque[_FrameRecord] = deque(maxlen=RECENT_FRAME_CAPACITY)
         self._frame_sequence: int = 0
 
-        # 上位机自动停机策略。阈值在内存中维护，进程启动后默认开启。
-        self._safety_config = AxleSafetyConfig()
+        # 上位机自动停机策略。阈值持久化在本地文件，进程启动时恢复。
+        self._safety_config_path = safety_config_path
+        self._safety_config = load_safety_config(safety_config_path)
         self._safety_last_trip: AxleSafetyTrip | None = None
         self._safety_trip_id = 0
+        # 使能指令生效时刻：反馈看门狗以“使能时刻”和“最近一次 0x35B”中较晚者为基准。
+        self._enable_since: float | None = None
+
+        # 硬件链路健康：按收发源统计连续异常 (次数, 首次异常单调时间)。
+        self._driver_error_streaks: dict[str, tuple[int, float]] = {}
+        self._link_error: str | None = None
+        self._link_failure_task: asyncio.Task[None] | None = None
+        self._log_throttle: dict[str, tuple[float, int]] = {}
 
         # 异步循环任务句柄
         self._tx_task: asyncio.Task[None] | None = None
@@ -120,10 +202,30 @@ class AxleManager:
         """报文发送循环状态。"""
         return self._is_transmitting
 
+    @property
+    def requires_close_confirmation(self) -> bool:
+        """电机已使能或循环测试未结束时，关闭程序前需要操作员确认。"""
+        return self._connected and (
+            self._command.mcu_en_cmd == 1 or self._cycle_status.status in {"running", "paused"}
+        )
+
+    def _channels(self) -> list[int]:
+        """当前配置下参与收发的通道列表 (-1 表示双通道)。"""
+        return [0, 1] if self._channel == -1 else [self._channel]
+
+    # ------------------------------------------------------------------
+    # 连接生命周期
+    # ------------------------------------------------------------------
     async def connect(self, config: CanConnectRequest) -> None:
         """串行执行设备连接，避免与停止/重连流程交叉操作硬件句柄。"""
         async with self._lifecycle_lock:
+            if self._connected:
+                # 重连走完整断开流程：停机帧、等待旧任务退出后再释放句柄，
+                # 杜绝旧任务仍在 DLL 调用中时句柄被关闭。
+                logger.info("设备已处于连接状态，先安全断开旧连接。")
+                await self._disconnect()
             await self._connect(config)
+        self._broadcast_telemetry()
 
     async def _connect(self, config: CanConnectRequest) -> None:
         """连接周立功 USBCAN 设备并开启通道与收发任务。
@@ -131,10 +233,6 @@ class AxleManager:
         :param config: 设备与通道配置参数
         """
         async with self._lock:
-            if self._connected:
-                logger.info("设备已处于连接状态，先安全断开旧连接。")
-                await self._disconnect_internal()
-
             self._device_type = config.device_type
             self._device_index = config.device_index
             self._channel = config.channel
@@ -142,6 +240,8 @@ class AxleManager:
             self._mcu_1_last_rx_timestamp = None
             self._mcu_2_last_rx_timestamp = None
             self._mcu_tbox_last_rx_timestamp = None
+            self._enable_since = None
+            self._driver_error_streaks.clear()
 
             logger.info(
                 "正在打开 USBCAN 设备 (type=%d, index=%d, chn=%d, baud=%d)...",
@@ -157,35 +257,17 @@ class AxleManager:
                 device_index=self._device_index,
             )
             try:
-                if self._channel == -1:
+                for ch in self._channels():
                     await self._driver.open_channel(
-                        channel=0,
-                        baud_rate=self._baud_rate,
-                    )
-                    await self._driver.open_channel(
-                        channel=1,
-                        baud_rate=self._baud_rate,
-                    )
-                else:
-                    await self._driver.open_channel(
-                        channel=self._channel,
+                        channel=ch,
                         baud_rate=self._baud_rate,
                     )
             except Exception as err:
                 # 若通道初始化失败，必须回滚释放已打开的设备句柄，防止硬件句柄泄漏
                 logger.error("通道打开失败，正在回滚设备状态: %s", err)
-                if self._channel == -1:
+                for ch in self._channels():
                     try:
-                        await self._driver.close_channel(0)
-                    except Exception:
-                        pass
-                    try:
-                        await self._driver.close_channel(1)
-                    except Exception:
-                        pass
-                else:
-                    try:
-                        await self._driver.close_channel(self._channel)
+                        await self._driver.close_channel(ch)
                     except Exception:
                         pass
                 try:
@@ -196,6 +278,7 @@ class AxleManager:
 
             self._connected = True
             self._is_transmitting = True
+            self._link_error = None
 
             # 2. 启动 10ms 发送循环与高频接收循环
             self._tx_task = asyncio.create_task(
@@ -207,43 +290,58 @@ class AxleManager:
                 name="axle_can_rx_loop",
             )
 
-            logger.info("USBCAN 启动成功，10ms 控制循环与接收循环已就绪。")
+            events.info(
+                "CAN 已连接: 设备类型=%d 索引=%d 通道=%d 波特率=%d",
+                self._device_type,
+                self._device_index,
+                self._channel,
+                self._baud_rate,
+            )
 
     async def disconnect(self) -> None:
         """串行执行设备停止与资源释放。"""
         async with self._lifecycle_lock:
+            was_connected = self._connected
             await self._disconnect()
+        if was_connected:
+            events.info("CAN 已由操作员断开")
 
-    async def _disconnect(self) -> None:
-        """安全断开 CAN 通信并释放硬件资源。"""
+    async def _disconnect(self, *, failure_reason: str | None = None) -> None:
+        """安全断开 CAN 通信并释放硬件资源 (需在生命周期锁内调用)。
+
+        :param failure_reason: 因链路故障被动断开时的原因；正在执行的循环测试将以
+            ``error`` 状态结束并记录该原因。
+        """
         disconnect_started = time.perf_counter()
 
         # 先把控制量切换到安全值，让既有 10 ms 循环连续发送两帧。
         # 这样既保留 VCU_Life 连续性，也避免停掉循环后再额外等待一次底层发送调用。
         async with self._lock:
-            self._finish_cycle_locked("stopped")
+            was_connected = self._connected
+            cycle_active = self._cycle_status.status in {"running", "paused"}
+            if failure_reason is not None and cycle_active:
+                self._finish_cycle_locked("error", error=failure_reason)
+            else:
+                self._finish_cycle_locked("stopped")
             should_drain_shutdown_frames = self._connected and self._tx_task is not None
             self._disconnecting = should_drain_shutdown_frames
-            self._command.torque_req = 0.0
-            self._command.speed_req = 0
-            self._command.work_mode_req = 0
-            self._command.mcu_en_cmd = 0
-            self._command.gear_sts = 3
-            self._command.active_discharge = 0
+            self._set_safe_command_locked()
             self._shutdown_frames_remaining = (
                 SHUTDOWN_FRAME_COUNT if should_drain_shutdown_frames else 0
             )
             self._shutdown_frames_sent.clear()
 
+        shutdown_frames_confirmed = False
         if should_drain_shutdown_frames:
             try:
                 await asyncio.wait_for(
                     self._shutdown_frames_sent.wait(),
                     timeout=SHUTDOWN_FRAME_TIMEOUT_SECONDS,
                 )
+                shutdown_frames_confirmed = True
             except TimeoutError:
                 logger.warning(
-                    "停机保护帧未在 %.0f ms 内完成发送，继续释放设备。",
+                    "停机保护帧未在 %.0f ms 内完成发送，释放前补发一帧。",
                     SHUTDOWN_FRAME_TIMEOUT_SECONDS * 1000,
                 )
 
@@ -256,6 +354,7 @@ class AxleManager:
             self._mcu_1_last_rx_timestamp = None
             self._mcu_2_last_rx_timestamp = None
             self._mcu_tbox_last_rx_timestamp = None
+            self._enable_since = None
             tasks_to_cancel = [t for t in (self._tx_task, self._rx_task) if t is not None]
             self._tx_task = None
             self._rx_task = None
@@ -272,20 +371,23 @@ class AxleManager:
             except Exception as err:
                 logger.warning("停止任务时发生异常: %s", err)
 
-        # 周期循环已经发出连续 Life 的停机帧，清理阶段不再重复发送。
+        # 周期循环已确认发出连续 Life 的停机帧时不再重复；否则在关闭前补发一帧。
         async with self._lock:
-            await self._cleanup_hardware(send_shutdown_frame=False)
+            await self._cleanup_hardware(
+                send_shutdown_frame=was_connected and not shutdown_frames_confirmed,
+            )
 
         logger.info(
             "USBCAN 停止通信并释放设备完成，耗时 %.1f ms。",
             (time.perf_counter() - disconnect_started) * 1000,
         )
+        self._broadcast_telemetry()
 
     async def _cleanup_hardware(self, *, send_shutdown_frame: bool = True) -> None:
         """发送停机保护帧并释放硬件资源 (需在锁保护下调用)。"""
-        channels_to_close = [0, 1] if self._channel == -1 else [self._channel]
+        channels_to_close = self._channels()
 
-        # 重连和进程退出等内部清理路径无法等待周期循环，使用下一连续 Life 补发一帧。
+        # 周期循环未能确认停机帧时 (链路异常或任务已退出)，使用下一连续 Life 补发一帧。
         if send_shutdown_frame:
             try:
                 self._command.life = (self._command.life + 1) % 16
@@ -295,7 +397,6 @@ class AxleManager:
                     work_mode_req=0,
                     mcu_en_cmd=0,
                     gear_sts=3,
-                    active_discharge=0,
                     life=self._command.life,
                 )
                 for ch in channels_to_close:
@@ -342,49 +443,81 @@ class AxleManager:
 
         logger.info("USBCAN 设备已完全关闭并释放。")
 
-    async def _disconnect_internal(self) -> None:
-        """内部断开流程 (需在锁保护下调用，仅用于 connect 中的重连场景)。"""
-        self._is_transmitting = False
-        self._finish_cycle_locked("stopped")
-        self._connected = False
-        self._mcu_1_last_rx_timestamp = None
-        self._mcu_2_last_rx_timestamp = None
-        self._mcu_tbox_last_rx_timestamp = None
+    # ------------------------------------------------------------------
+    # 硬件链路健康与日志限流
+    # ------------------------------------------------------------------
+    def _log_throttled(self, key: str, level: int, msg: str, *args: object) -> None:
+        """同一 key 的日志每秒最多输出一次，并汇报期间被省略的次数。"""
+        now = time.monotonic()
+        last, suppressed = self._log_throttle.get(key, (-math.inf, 0))
+        if now - last < LOG_THROTTLE_SECONDS:
+            self._log_throttle[key] = (last, suppressed + 1)
+            return
+        if suppressed:
+            msg = f"{msg}（期间另有 %d 次同类告警已省略）"
+            args = (*args, suppressed)
+        logger.log(level, msg, *args)
+        self._log_throttle[key] = (now, 0)
 
-        # connect 中调用时，旧任务仍在运行；此处直接取消。
-        # 因为此处已持锁，而任务也需要锁，所以只做 cancel 不 await，
-        # 依靠 _is_transmitting=False 让任务在下一个无锁 await 点自然退出。
-        for task in (self._tx_task, self._rx_task):
-            if task is not None:
-                task.cancel()
-        self._tx_task = None
-        self._rx_task = None
+    def _note_driver_success(self, source: str) -> None:
+        """一次成功的驱动调用即结束该收发源的连续异常计数。"""
+        if source in self._driver_error_streaks:
+            del self._driver_error_streaks[source]
 
-        await self._cleanup_hardware()
+    def _note_driver_error(self, source: str, description: str, err: Exception) -> None:
+        """记录驱动异常；连续异常达到阈值时安排自动停止通信。"""
+        now = time.monotonic()
+        count, since = self._driver_error_streaks.get(source, (0, now))
+        count += 1
+        self._driver_error_streaks[source] = (count, since)
+        self._log_throttled(source, logging.WARNING, "%s异常: %s", description, err)
 
+        if count >= LINK_FAILURE_ERROR_COUNT or now - since >= LINK_FAILURE_SECONDS:
+            self._schedule_link_failure(
+                f"{description}连续 {count} 次异常（持续 {(now - since) * 1000:.0f} ms），"
+                f"已自动停止通信: {err}"
+            )
+
+    def _schedule_link_failure(self, reason: str) -> None:
+        """在独立任务中执行自动断开，避免收发循环取消自身。"""
+        if not self._connected or self._disconnecting:
+            return
+        if self._link_failure_task is not None and not self._link_failure_task.done():
+            return
+        self._link_failure_task = asyncio.create_task(
+            self._handle_link_failure(reason),
+            name="axle_can_link_failure",
+        )
+
+    async def _handle_link_failure(self, reason: str) -> None:
+        """硬件链路失效：结束循环测试、发送停机帧 (尽力) 并释放设备。"""
+        events.error("CAN 硬件链路失效，自动停止通信: %s", reason)
+        async with self._lifecycle_lock:
+            if not self._connected:
+                return
+            await self._disconnect(failure_reason=reason)
+            self._link_error = reason
+        self._broadcast_telemetry()
+
+    # ------------------------------------------------------------------
+    # 控制命令与循环测试
+    # ------------------------------------------------------------------
     def _set_safe_command_locked(self) -> None:
         """在状态锁内写入统一的停机命令快照。"""
         self._command.torque_req = 0.0
         self._command.speed_req = 0
-        self._command.acc_position = 0.0
         self._command.work_mode_req = 0
         self._command.mcu_en_cmd = 0
         self._command.gear_sts = 3
-        self._command.active_discharge = 0
 
     def _apply_update_locked(self, update: VcuCommandUpdateRequest) -> None:
         """在状态锁内合并一组已通过 Pydantic 校验的控制字段。"""
         for field_name in (
             "torque_req",
             "speed_req",
-            "acc_position",
             "work_mode_req",
             "mcu_en_cmd",
-            "hand_brk_sts",
-            "brk_sts",
-            "abs_work_sts",
             "gear_sts",
-            "active_discharge",
         ):
             value = getattr(update, field_name)
             if value is not None:
@@ -401,11 +534,9 @@ class AxleManager:
         self._cycle_status.current_step_duration_seconds = step.duration_seconds
         self._command.torque_req = 0.0
         self._command.speed_req = step.target_speed
-        self._command.acc_position = 0.0
         self._command.work_mode_req = 3
         self._command.mcu_en_cmd = 1
         self._command.gear_sts = step.gear
-        self._command.active_discharge = 0
 
     def _finish_cycle_locked(
         self,
@@ -465,6 +596,12 @@ class AxleManager:
                 name="axle_cycle_test",
             )
             result = self._cycle_status.model_copy()
+            events.info(
+                "循环测试启动: %d 步 × %d 圈，计划 %d s",
+                result.total_steps,
+                result.total_loops,
+                result.planned_total_seconds,
+            )
 
         self._broadcast_telemetry()
         return result
@@ -477,6 +614,11 @@ class AxleManager:
             self._cycle_status.status = "paused"
             self._set_safe_command_locked()
             result = self._cycle_status.model_copy()
+            events.info(
+                "循环测试暂停: 第 %d 圈 第 %d 步",
+                result.current_loop,
+                result.current_step_index + 1,
+            )
         self._broadcast_telemetry()
         return result
 
@@ -491,14 +633,18 @@ class AxleManager:
             self._apply_cycle_step_locked()
             self._cycle_status.status = "running"
             result = self._cycle_status.model_copy()
+            events.info("循环测试继续")
         self._broadcast_telemetry()
         return result
 
     async def stop_cycle_test(self) -> CycleTestStatus:
         """主动终止循环测试并释放控制权。"""
         async with self._lock:
+            was_active = self._cycle_status.status in {"running", "paused"}
             self._finish_cycle_locked("stopped")
             result = self._cycle_status.model_copy()
+        if was_active:
+            events.info("循环测试被操作员终止: 已用时 %d s", result.total_elapsed_seconds)
         self._broadcast_telemetry()
         return result
 
@@ -543,6 +689,11 @@ class AxleManager:
                         if next_index >= len(self._cycle_config.steps):
                             if self._cycle_status.current_loop >= self._cycle_status.total_loops:
                                 self._finish_cycle_locked("completed")
+                                events.info(
+                                    "循环测试完成: %d 圈，用时 %d s",
+                                    self._cycle_status.total_loops,
+                                    self._cycle_status.total_elapsed_seconds,
+                                )
                                 should_broadcast = True
                             else:
                                 self._cycle_status.current_loop += 1
@@ -564,6 +715,7 @@ class AxleManager:
             return
         except Exception as err:
             logger.exception("循环测试状态机异常: %s", err)
+            events.error("循环测试异常终止: %s", err)
             async with self._lock:
                 if generation == self._cycle_generation:
                     self._finish_cycle_locked("error", error=str(err))
@@ -589,7 +741,6 @@ class AxleManager:
                     (update.mcu_en_cmd is not None and update.mcu_en_cmd != 0)
                     or (update.torque_req is not None and update.torque_req != 0.0)
                     or (update.speed_req is not None and update.speed_req != 0)
-                    or (update.acc_position is not None and update.acc_position != 0.0)
                 ):
                     raise CanDriverError(
                         "系统处于急停锁定状态，禁止使能或设置非零控制量。"
@@ -597,13 +748,17 @@ class AxleManager:
                     )
 
             self._apply_update_locked(update)
+            result = self._command.model_copy()
 
-            return self._command.model_copy()
+        self._broadcast_telemetry()
+        return result
 
-    async def emergency_stop(self) -> VcuCommandState:
+    async def emergency_stop(self, *, reason: str | None = None) -> VcuCommandState:
         """一键紧急停机 (Emergency Stop)。
 
-        立即将使能置 0、目标转矩/转速/油门开度归零、挂入空挡，并立即强制发送一帧控制报文。
+        立即将使能置 0、目标转矩/转速归零、挂入空挡，并立即强制发送一帧控制报文。
+
+        :param reason: 触发原因，缺省为操作员手动触发；写入安全事件日志
         """
         async with self._lock:
             self._finish_cycle_locked("stopped", error="急停已触发。")
@@ -611,22 +766,16 @@ class AxleManager:
 
             # 如果当前通道有效，立即同步下发紧急制动帧
             if self._connected:
-                channels_to_use = [0, 1] if self._channel == -1 else [self._channel]
                 self._command.life = (self._command.life + 1) % 16
                 payload = encode_vcu_11(
                     torque_req=0.0,
                     speed_req=0,
-                    acc_position=0.0,
                     work_mode_req=self._command.work_mode_req,
                     mcu_en_cmd=0,
-                    hand_brk_sts=self._command.hand_brk_sts,
-                    brk_sts=self._command.brk_sts,
-                    abs_work_sts=self._command.abs_work_sts,
                     gear_sts=3,
-                    active_discharge=0,
                     life=self._command.life,
                 )
-                for ch in channels_to_use:
+                for ch in self._channels():
                     if self._driver.is_channel_open(ch):
                         try:
                             s = await self._driver.transmit(
@@ -642,7 +791,7 @@ class AxleManager:
                             self._tx_error_count += 1
                             logger.error("紧急停机报文下发失败 (通道 %d): %s", ch, err)
 
-            logger.warning("已触发紧急停机: 使能已关闭，目标转矩/转速归零！")
+            events.warning("紧急停机: %s", reason or "操作员手动触发")
             result = self._command.model_copy()
 
         self._broadcast_telemetry()
@@ -651,18 +800,35 @@ class AxleManager:
     async def emergency_reset(self) -> VcuCommandState:
         """复位急停互锁状态 (Emergency Reset)。
 
-        解除急停锁定，允许后续正常控制指令。操作员确认安全后手动调用。
+        仅解除互锁标志，不会自动恢复使能或停机前的控制量：命令始终停留在使能关闭、
+        目标转矩/转速归零、空挡的安全状态，必须由操作员重新下发。操作员确认现场安全
+        后手动调用。越限原因未消除时，下一次新鲜 MCU 反馈会立即再次触发自动停机。
+
+        :return: 复位后的完整控制状态 (仍为安全值)
         """
         async with self._lock:
+            was_locked = self._is_emergency_locked
             self._is_emergency_locked = False
-            logger.info("急停互锁已复位，系统恢复正常控制模式。")
-            return self._command.model_copy()
+            if was_locked:
+                # 保持“互锁解除后命令仍为安全值”的不变量，杜绝残留非零给定在解除
+                # 瞬间被 10ms 循环带出。
+                self._set_safe_command_locked()
+            result = self._command.model_copy()
+
+        if was_locked:
+            events.info("急停互锁已复位，控制量保持安全值")
+
+        self._broadcast_telemetry()
+        return result
 
     @property
     def is_emergency_locked(self) -> bool:
         """急停互锁状态。"""
         return self._is_emergency_locked
 
+    # ------------------------------------------------------------------
+    # 安全监控
+    # ------------------------------------------------------------------
     def get_safety_config(self) -> AxleSafetyConfig:
         """获取当前上位机自动停机配置快照。"""
         return self._safety_config.model_copy()
@@ -671,19 +837,29 @@ class AxleManager:
         self,
         config: AxleSafetyConfig,
     ) -> AxleSafetyConfig:
-        """更新自动停机阈值。
+        """更新自动停机阈值并持久化。
 
         保存配置本身不使用历史遥测立即触发急停；后续收到新鲜的 0x35B 或
-        0x35C 反馈时，才会按新配置执行安全判断。
+        0x35C 反馈时，才会按新配置执行安全判断。新配置先在内存中生效，
+        写盘失败时抛出 ``OSError`` 由接口层告知操作员。
         """
         async with self._lock:
             self._safety_config = config.model_copy()
             result = self._safety_config.model_copy()
 
+        events.info(
+            "安全配置已更新: 启用=%s 转速=%d RPM 转矩=%g Nm 温度=%g ℃ 反馈超时=%d ms",
+            result.enabled,
+            result.max_motor_speed_rpm,
+            result.max_motor_torque_nm,
+            result.max_motor_temp_c,
+            result.feedback_timeout_ms,
+        )
         self._broadcast_telemetry()
+        await asyncio.to_thread(save_safety_config, self._safety_config_path, result)
         return result
 
-    def _find_safety_violation(self) -> tuple[str, float, float, str] | None:
+    def _find_safety_violation(self) -> _SafetyViolation | None:
         """从新鲜 MCU 反馈中寻找第一项越限条件。
 
         转速和转矩使用绝对值，因此正反转与驱动/回馈转矩都会受同一阈值保护。
@@ -700,7 +876,7 @@ class AxleManager:
         ):
             actual_speed = float(abs(self._mcu_2.mcu_act_motor_spd))
             if actual_speed > config.max_motor_speed_rpm:
-                return (
+                return _SafetyViolation(
                     "motor_speed",
                     actual_speed,
                     float(config.max_motor_speed_rpm),
@@ -709,7 +885,7 @@ class AxleManager:
 
             actual_torque = abs(self._mcu_2.mcu_act_motor_tq)
             if actual_torque > config.max_motor_torque_nm:
-                return (
+                return _SafetyViolation(
                     "motor_torque",
                     actual_torque,
                     config.max_motor_torque_nm,
@@ -722,7 +898,7 @@ class AxleManager:
         ):
             actual_temperature = float(self._mcu_tbox.mcu_motor_temp)
             if actual_temperature > config.max_motor_temp_c:
-                return (
+                return _SafetyViolation(
                     "motor_temperature",
                     actual_temperature,
                     config.max_motor_temp_c,
@@ -731,37 +907,81 @@ class AxleManager:
 
         return None
 
-    async def _evaluate_safety(self) -> bool:
-        """若任一已配置指标越限，记录事件并调用既有急停互锁。"""
-        violation = self._find_safety_violation()
-        if violation is None:
-            return False
+    def _find_feedback_timeout(self) -> _SafetyViolation | None:
+        """使能状态下 MCU_2 (0x35B) 反馈中断看门狗。
 
-        metric, actual_value, threshold, unit = violation
-        metric_label = {
-            "motor_speed": "实际转速",
-            "motor_torque": "实际转矩",
-            "motor_temperature": "电机温度",
-        }[metric]
+        越限判定只在收到反馈时运行，若 MCU 掉线或总线断开，转速/转矩保护将失效；
+        因此在使能期间持续检查 0x35B 的新鲜度，以“使能时刻”与“最近一次反馈”中
+        较晚者为基准，超时即视为失去闭环监控。
+        """
+        if self._command.mcu_en_cmd != 1:
+            self._enable_since = None
+            return None
+
+        now = time.time()
+        if self._enable_since is None:
+            self._enable_since = now
+
+        config = self._safety_config
+        if not config.enabled or self._is_emergency_locked or self._disconnecting:
+            return None
+
+        reference = max(self._enable_since, self._mcu_2_last_rx_timestamp or 0.0)
+        elapsed_ms = (now - reference) * 1000
+        if elapsed_ms > config.feedback_timeout_ms:
+            return _SafetyViolation(
+                "feedback_timeout",
+                round(elapsed_ms),
+                float(config.feedback_timeout_ms),
+                "ms",
+            )
+        return None
+
+    async def _trip_safety(self, violation: _SafetyViolation) -> None:
+        """记录自动停机事件并调用既有急停互锁。"""
+        label = SAFETY_METRIC_LABELS[violation.metric]
+        if violation.metric == "feedback_timeout":
+            message = (
+                f"使能状态下 {label} {violation.actual_value:g} ms，"
+                f"超过自动停机阈值 {violation.threshold:g} ms。"
+            )
+        else:
+            message = (
+                f"{label} {violation.actual_value:g} {violation.unit} 超过自动停机阈值 "
+                f"{violation.threshold:g} {violation.unit}。"
+            )
         self._safety_trip_id += 1
         self._safety_last_trip = AxleSafetyTrip(
             trip_id=self._safety_trip_id,
-            metric=metric,
-            actual_value=actual_value,
-            threshold=threshold,
-            unit=unit,
-            message=(
-                f"{metric_label} {actual_value:g} {unit} 超过自动停机阈值 {threshold:g} {unit}。"
-            ),
+            metric=violation.metric,
+            actual_value=violation.actual_value,
+            threshold=violation.threshold,
+            unit=violation.unit,
+            message=message,
             triggered_at=datetime.now(UTC).isoformat(),
         )
-        logger.warning("自动安全停机触发: %s", self._safety_last_trip.message)
-
         # 复用统一急停路径，确保互锁、零转矩/零转速、空挡和立即发送逻辑一致。
-        await self.emergency_stop()
-        self._broadcast_telemetry()
+        await self.emergency_stop(reason=f"自动安全停机 — {message}")
+
+    async def _evaluate_safety(self) -> bool:
+        """若任一已配置指标越限，记录事件并急停。"""
+        violation = self._find_safety_violation()
+        if violation is None:
+            return False
+        await self._trip_safety(violation)
         return True
 
+    async def _evaluate_feedback_watchdog(self) -> bool:
+        """若使能期间 MCU 反馈中断超时，记录事件并急停。"""
+        violation = self._find_feedback_timeout()
+        if violation is None:
+            return False
+        await self._trip_safety(violation)
+        return True
+
+    # ------------------------------------------------------------------
+    # 报文监视与遥测快照
+    # ------------------------------------------------------------------
     def _record_frame(
         self,
         *,
@@ -770,22 +990,32 @@ class AxleManager:
         data: bytes,
         name: str = "",
     ) -> None:
-        """内部记录单条 CAN 报文至循环缓冲区。"""
-        now = datetime.now()
-        timestamp = f"{now.strftime('%H:%M:%S')}.{now.microsecond // 1000:03d}"
-        data_hex = " ".join(f"{b:02X}" for b in data)
+        """内部记录单条 CAN 报文至循环缓冲区 (仅存原始字段，避免高频构造模型)。"""
         self._frame_sequence += 1
         self._recent_frames.append(
-            CanFrameItem(
+            _FrameRecord(
                 sequence=self._frame_sequence,
-                timestamp=timestamp,
+                wall_time=time.time(),
                 direction=direction,
                 can_id=can_id,
-                can_id_hex=f"0x{can_id:03X}",
-                dlc=len(data),
-                data_hex=data_hex,
+                data=data,
                 name=name,
             )
+        )
+
+    @staticmethod
+    def _frame_item(record: _FrameRecord) -> CanFrameItem:
+        """将缓冲区记录转换为对外报文模型 (字段由内部生成，跳过重复校验)。"""
+        moment = datetime.fromtimestamp(record.wall_time)
+        return CanFrameItem.model_construct(
+            sequence=record.sequence,
+            timestamp=f"{moment:%H:%M:%S}.{moment.microsecond // 1000:03d}",
+            direction=record.direction,
+            can_id=record.can_id,
+            can_id_hex=f"0x{record.can_id:03X}",
+            dlc=len(record.data),
+            data_hex=record.data.hex(" ").upper(),
+            name=record.name,
         )
 
     async def send_raw_frame(self, request: CanSendRawFrameRequest) -> bool:
@@ -803,8 +1033,7 @@ class AxleManager:
             ):
                 raise CanDriverError("循环测试运行期间禁止手动下发 VCU_11 (0x258) 控制帧。")
 
-            channels_to_use = [0, 1] if self._channel == -1 else [self._channel]
-            valid_channels = [ch for ch in channels_to_use if self._driver.is_channel_open(ch)]
+            valid_channels = [ch for ch in self._channels() if self._driver.is_channel_open(ch)]
 
             if not valid_channels:
                 raise CanDriverError("当前通道未开启，无法下发报文。")
@@ -849,6 +1078,7 @@ class AxleManager:
     def clear_frames(self) -> None:
         """清空最近报文监控缓冲区。"""
         self._recent_frames.clear()
+        self._broadcast_telemetry()
 
     def get_telemetry(
         self,
@@ -860,9 +1090,10 @@ class AxleManager:
         now_str = datetime.now(UTC).isoformat()
         recent_frames: list[CanFrameItem] = []
         if include_frames:
-            recent_frames = list(self._recent_frames)
+            records = list(self._recent_frames)
             if frame_limit is not None:
-                recent_frames = recent_frames[-frame_limit:]
+                records = records[-frame_limit:]
+            recent_frames = [self._frame_item(record) for record in records]
 
         return AxleTelemetry(
             connected=self._connected,
@@ -888,6 +1119,8 @@ class AxleManager:
                     else None
                 ),
             ),
+            link_error=self._link_error,
+            driver_error=self._driver_error,
             tx_frame_count=self._tx_frame_count,
             rx_frame_count=self._rx_frame_count,
             tx_error_count=self._tx_error_count,
@@ -940,17 +1173,26 @@ class AxleManager:
     async def shutdown(self) -> None:
         """系统退出时释放所有硬件连接并关闭驱动线程池。"""
         async with self._lifecycle_lock:
-            async with self._lock:
-                if self._connected:
-                    await self._disconnect_internal()
+            if self._connected:
+                await self._disconnect()
+                events.info("程序退出，已发送停机帧并断开 CAN")
+        link_task = self._link_failure_task
+        if link_task is not None and not link_task.done():
+            link_task.cancel()
+            try:
+                await link_task
+            except asyncio.CancelledError:
+                pass
         self._driver.shutdown_executor()
 
+    # ------------------------------------------------------------------
+    # 周期收发循环
+    # ------------------------------------------------------------------
     async def _tx_loop(self) -> None:
         """VCU_11 10ms 高精度定时循环发送任务。
 
         按照通讯矩阵严格以 10ms 周期向驱动电机控制器 (MCU) 发送控制信号。
         """
-        target_interval = 0.010  # 10ms
         logger.info("VCU_11 10ms 发送循环已启动。")
 
         with windows_high_resolution_timer():
@@ -962,59 +1204,58 @@ class AxleManager:
                         self._command.life = (self._command.life + 1) % 16
                         tq = self._command.torque_req
                         spd = self._command.speed_req
-                        acc = self._command.acc_position
                         mode = self._command.work_mode_req
                         en = self._command.mcu_en_cmd
-                        hand_brk = self._command.hand_brk_sts
-                        brk = self._command.brk_sts
-                        abs_work = self._command.abs_work_sts
                         gear = self._command.gear_sts
-                        dischg = self._command.active_discharge
                         life = self._command.life
                         is_shutdown_payload = (
                             self._disconnecting
                             and tq == 0.0
                             and spd == 0
-                            and acc == 0.0
                             and mode == 0
                             and en == 0
                             and gear == 3
-                            and dischg == 0
                         )
 
-                    # 2. 纯 Python 位运算编码
+                    # 2. 纯 Python 位运算编码。手刹、制动、ABS、加速踏板与主动放电为整车信号，
+                    # 空载台架上固定按无效值 (0) 发送。
                     payload = encode_vcu_11(
                         torque_req=tq,
                         speed_req=spd,
-                        acc_position=acc,
                         work_mode_req=mode,
                         mcu_en_cmd=en,
-                        hand_brk_sts=hand_brk,
-                        brk_sts=brk,
-                        abs_work_sts=abs_work,
                         gear_sts=gear,
-                        active_discharge=dischg,
                         life=life,
                     )
 
                     # 3. 异步非阻塞发送 (受驱动内部 _tx_lock 保护保证硬件总线时序串行安全)
-                    channels_to_use = [0, 1] if self._channel == -1 else [self._channel]
                     any_success = False
-                    for ch in channels_to_use:
+                    for ch in self._channels():
+                        source = f"tx{ch}"
                         try:
                             s = await self._driver.transmit(
                                 can_id=CAN_ID_VCU_11,
                                 data=payload,
                                 channel=ch,
                             )
-                            if s:
-                                self._tx_frame_count += 1
-                                any_success = True
-                            else:
-                                self._tx_error_count += 1
                         except Exception as err:
                             self._tx_error_count += 1
-                            logger.warning("CAN 发送异常 (通道 %d): %s", ch, err)
+                            self._note_driver_error(source, f"CAN 通道 {ch} 发送", err)
+                            continue
+
+                        self._note_driver_success(source)
+                        if s:
+                            self._tx_frame_count += 1
+                            any_success = True
+                        else:
+                            # 驱动正常返回但硬件未接收：通常为总线无应答或发送缓冲区满。
+                            self._tx_error_count += 1
+                            self._log_throttled(
+                                f"tx_reject{ch}",
+                                logging.WARNING,
+                                "VCU_11 发送未被硬件接受 (通道 %d)，请检查总线终端电阻与对端节点。",
+                                ch,
+                            )
 
                     if any_success:
                         self._record_frame(
@@ -1031,21 +1272,35 @@ class AxleManager:
                                     if self._shutdown_frames_remaining == 0:
                                         self._shutdown_frames_sent.set()
 
-                    # 4. 绝对时间戳推移补偿（防止相位漂移累积）
-                    next_tick += target_interval
-                    sleep_duration = next_tick - time.perf_counter()
+                    # 4. 绝对时间戳推移补偿（防止相位漂移累积）；若因卡顿落后超过一个
+                    # 周期则丢弃错过的节拍重新对齐，避免恢复后集中补发一串报文。
+                    next_tick += TX_INTERVAL_SECONDS
+                    now = time.perf_counter()
+                    sleep_duration = next_tick - now
                     if sleep_duration > 0:
                         await asyncio.sleep(sleep_duration)
+                    else:
+                        if -sleep_duration >= TX_INTERVAL_SECONDS:
+                            self._log_throttled(
+                                "tx_overrun",
+                                logging.WARNING,
+                                "VCU_11 发送周期滞后 %.1f ms，已重新对齐节拍。",
+                                -sleep_duration * 1000,
+                            )
+                            next_tick = now
+                        await asyncio.sleep(0)
             except asyncio.CancelledError:
                 logger.info("VCU_11 发送循环已被取消。")
                 raise
             except Exception as tx_err:
                 logger.exception("VCU_11 发送循环发生未捕获异常: %s", tx_err)
+                self._schedule_link_failure(f"VCU_11 发送循环异常终止: {tx_err}")
 
     async def _rx_loop(self) -> None:
         """CAN 报文接收与分发任务。
 
-        以 5ms 周期轮询周立功硬件缓冲区，支持突发报文批量读取与即时解码。
+        以 5ms 周期轮询周立功硬件缓冲区，支持突发报文批量读取与即时解码；
+        每轮同时执行反馈看门狗并按固定节拍推送 SSE 快照。
         """
         logger.info("CAN 接收循环已启动。")
         last_broadcast_time = time.perf_counter()
@@ -1053,136 +1308,148 @@ class AxleManager:
         try:
             while self._is_transmitting:
                 # 批量接收硬件缓冲区中的报文
-                channels_to_use = [0, 1] if self._channel == -1 else [self._channel]
-                frames = []
-                for ch in channels_to_use:
+                frames: list[CanRawFrame] = []
+                for ch in self._channels():
+                    source = f"rx{ch}"
                     try:
                         ch_frames = await self._driver.receive(
                             channel=ch,
                             max_count=100,
                             wait_time_ms=1,
                         )
-                        if ch_frames:
-                            frames.extend(ch_frames)
                     except Exception as err:
-                        logger.warning("CAN 硬件接收驱动异常 (通道 %d): %s", ch, err)
-
-                if not frames:
-                    await asyncio.sleep(0.005)
-                    continue
+                        self._note_driver_error(source, f"CAN 通道 {ch} 接收", err)
+                        continue
+                    self._note_driver_success(source)
+                    if ch_frames:
+                        frames.extend(ch_frames)
 
                 if frames:
-                    self._rx_frame_count += len(frames)
-                    self._last_rx_timestamp = time.time()
+                    await self._process_frames(frames)
 
-                    for frame in frames:
-                        # 仅处理有效的数据帧 (8 字节)
-                        if len(frame.data) < 8:
-                            continue
+                await self._evaluate_feedback_watchdog()
 
-                        frame_name = f"CAN_0x{frame.can_id:X}"
-                        # 使用 Python 3.10+ match-case 分发对应报文解码
-                        safety_feedback_updated = False
-                        try:
-                            match frame.can_id:
-                                case 0x35A:  # CAN_ID_MCU_DRIVE_MOTOR_1
-                                    frame_name = "MCU_1 (母线电气/故障)"
-                                    d1 = decode_mcu_motor_1(frame.data)
-                                    self._mcu_1 = McuDriveMotor1Telemetry(
-                                        mcu_dc_main_wire_volt=d1.mcu_dc_main_wire_volt,
-                                        mcu_dc_main_wire_curr=d1.mcu_dc_main_wire_curr,
-                                        mcu_integ_ctr_flt_num=d1.mcu_integ_ctr_flt_num,
-                                        mcu_flt_code=d1.mcu_flt_code,
-                                        mcu_flt_levl=d1.mcu_flt_levl,
-                                        mcu_life_1=d1.mcu_life_1,
-                                        mcu_tbox_flt_levl=d1.mcu_tbox_flt_levl,
-                                    )
-                                    self._mcu_1_last_rx_timestamp = time.time()
-
-                                case 0x35B:  # CAN_ID_MCU_DRIVE_MOTOR_2
-                                    frame_name = "MCU_2 (电机转速/转矩)"
-                                    d2 = decode_mcu_motor_2(frame.data)
-                                    self._mcu_2 = McuDriveMotor2Telemetry(
-                                        mcu_motor_tor_max=d2.mcu_motor_tor_max,
-                                        mcu_act_motor_spd=d2.mcu_act_motor_spd,
-                                        mcu_act_motor_tq=d2.mcu_act_motor_tq,
-                                        mcu_active_dischrg_sts=d2.mcu_active_dischrg_sts,
-                                        mcu_motor_work_mod=d2.mcu_motor_work_mod,
-                                        mcu_lv_sts=d2.mcu_lv_sts,
-                                        mcu_en_sts=d2.mcu_en_sts,
-                                        mcu_motor_temp_extre_over=d2.mcu_motor_temp_extre_over,
-                                        mcu_mcu_temp_extre_over=d2.mcu_mcu_temp_extre_over,
-                                        mcm_slope_sts=d2.mcm_slope_sts,
-                                        mcu_life_2=d2.mcu_life_2,
-                                    )
-                                    self._mcu_2_last_rx_timestamp = time.time()
-                                    safety_feedback_updated = True
-
-                                case 0x35C:  # CAN_ID_MCU_TBOX_DRIVE_MOTOR
-                                    frame_name = "MCU_Tbox (温度热管理)"
-                                    dt = decode_mcu_tbox_motor(frame.data)
-                                    self._mcu_tbox = McuTboxTelemetry(
-                                        num_mtr=dt.num_mtr,
-                                        num_mtr_srl=dt.num_mtr_srl,
-                                        st_mtr=dt.st_mtr,
-                                        mcu_motor_temp=dt.mcu_motor_temp,
-                                        mcu_ctller_temp=dt.mcu_ctller_temp,
-                                        mcu_tbox_life=dt.mcu_tbox_life,
-                                    )
-                                    self._mcu_tbox_last_rx_timestamp = time.time()
-                                    safety_feedback_updated = True
-
-                                case 0x5EF:  # CAN_ID_MCU_SV
-                                    frame_name = "MCU_SV (版本信息)"
-
-                                case 0x251:  # CAN_ID_ONEBOX_ESC_TSC1
-                                    frame_name = "Onebox_ESC_TSC1 (牵引控制)"
-
-                                case 0x254:  # CAN_ID_ONEBOX_ESC_ENERGYRECOVERY
-                                    frame_name = "Onebox_ESC_EnergyRecovery (能量回收)"
-
-                                case _:
-                                    # 其他未知或未配置的 CAN 报文
-                                    pass
-                        except Exception as decode_err:
-                            logger.warning(
-                                "解码 CAN 报文失败 (ID=0x%X, len=%d): %s",
-                                frame.can_id,
-                                len(frame.data),
-                                decode_err,
-                            )
-
-                        self._record_frame(
-                            direction="RX",
-                            can_id=frame.can_id,
-                            data=frame.data,
-                            name=frame_name,
-                        )
-
-                        if safety_feedback_updated:
-                            await self._evaluate_safety()
-
-                # 控制 SSE 广播频率 (约 20Hz / 50ms 一次推送，保证流畅且不阻塞网络)
+                # 固定节拍推送 (约 20Hz)：无报文时也保证计数器、指令与连接状态实时可见。
                 now = time.perf_counter()
-                if now - last_broadcast_time >= 0.050:
+                if now - last_broadcast_time >= BROADCAST_INTERVAL_SECONDS:
                     self._broadcast_telemetry()
                     last_broadcast_time = now
 
-                await asyncio.sleep(0.005)
+                await asyncio.sleep(RX_POLL_INTERVAL_SECONDS)
         except asyncio.CancelledError:
             logger.info("CAN 接收循环已被取消。")
             raise
         except Exception as rx_err:
             logger.exception("CAN 接收循环发生未捕获异常: %s", rx_err)
+            self._schedule_link_failure(f"CAN 接收循环异常终止: {rx_err}")
+
+    async def _process_frames(self, frames: list[CanRawFrame]) -> None:
+        """解码一批接收报文并在安全相关反馈更新后执行越限判定。"""
+        self._rx_frame_count += len(frames)
+        self._last_rx_timestamp = time.time()
+
+        for frame in frames:
+            # 仅处理有效的数据帧 (8 字节)
+            if len(frame.data) < 8:
+                continue
+
+            frame_name = f"CAN_0x{frame.can_id:X}"
+            # 使用 Python 3.10+ match-case 分发对应报文解码
+            safety_feedback_updated = False
+            try:
+                match frame.can_id:
+                    case 0x35A:  # CAN_ID_MCU_DRIVE_MOTOR_1
+                        frame_name = "MCU_1 (母线电气/故障)"
+                        d1 = decode_mcu_motor_1(frame.data)
+                        self._mcu_1 = McuDriveMotor1Telemetry(
+                            mcu_dc_main_wire_volt=d1.mcu_dc_main_wire_volt,
+                            mcu_dc_main_wire_curr=d1.mcu_dc_main_wire_curr,
+                            mcu_integ_ctr_flt_num=d1.mcu_integ_ctr_flt_num,
+                            mcu_flt_code=d1.mcu_flt_code,
+                            mcu_flt_levl=d1.mcu_flt_levl,
+                            mcu_life_1=d1.mcu_life_1,
+                            mcu_tbox_flt_levl=d1.mcu_tbox_flt_levl,
+                        )
+                        self._mcu_1_last_rx_timestamp = time.time()
+
+                    case 0x35B:  # CAN_ID_MCU_DRIVE_MOTOR_2
+                        frame_name = "MCU_2 (电机转速/转矩)"
+                        d2 = decode_mcu_motor_2(frame.data)
+                        self._mcu_2 = McuDriveMotor2Telemetry(
+                            mcu_motor_tor_max=d2.mcu_motor_tor_max,
+                            mcu_act_motor_spd=d2.mcu_act_motor_spd,
+                            mcu_act_motor_tq=d2.mcu_act_motor_tq,
+                            mcu_motor_work_mod=d2.mcu_motor_work_mod,
+                            mcu_lv_sts=d2.mcu_lv_sts,
+                            mcu_en_sts=d2.mcu_en_sts,
+                            mcu_motor_temp_extre_over=d2.mcu_motor_temp_extre_over,
+                            mcu_mcu_temp_extre_over=d2.mcu_mcu_temp_extre_over,
+                            mcu_life_2=d2.mcu_life_2,
+                        )
+                        self._mcu_2_last_rx_timestamp = time.time()
+                        safety_feedback_updated = True
+
+                    case 0x35C:  # CAN_ID_MCU_TBOX_DRIVE_MOTOR
+                        frame_name = "MCU_Tbox (温度热管理)"
+                        dt = decode_mcu_tbox_motor(frame.data)
+                        self._mcu_tbox = McuTboxTelemetry(
+                            num_mtr=dt.num_mtr,
+                            num_mtr_srl=dt.num_mtr_srl,
+                            st_mtr=dt.st_mtr,
+                            mcu_motor_temp=dt.mcu_motor_temp,
+                            mcu_ctller_temp=dt.mcu_ctller_temp,
+                            mcu_tbox_life=dt.mcu_tbox_life,
+                        )
+                        self._mcu_tbox_last_rx_timestamp = time.time()
+                        safety_feedback_updated = True
+
+                    case 0x5EF:  # CAN_ID_MCU_SV
+                        frame_name = "MCU_SV (版本信息)"
+
+                    case 0x251:  # CAN_ID_ONEBOX_ESC_TSC1
+                        frame_name = "Onebox_ESC_TSC1 (牵引控制)"
+
+                    case 0x254:  # CAN_ID_ONEBOX_ESC_ENERGYRECOVERY
+                        frame_name = "Onebox_ESC_EnergyRecovery (能量回收)"
+
+                    case _:
+                        # 其他未知或未配置的 CAN 报文
+                        pass
+            except Exception as decode_err:
+                self._log_throttled(
+                    f"decode{frame.can_id:X}",
+                    logging.WARNING,
+                    "解码 CAN 报文失败 (ID=0x%X, len=%d): %s",
+                    frame.can_id,
+                    len(frame.data),
+                    decode_err,
+                )
+
+            self._record_frame(
+                direction="RX",
+                can_id=frame.can_id,
+                data=frame.data,
+                name=frame_name,
+            )
+
+            if safety_feedback_updated:
+                await self._evaluate_safety()
 
 
 # 全局单例管理器
 _global_axle_manager: AxleManager | None = None
 
 
+def peek_axle_manager() -> AxleManager | None:
+    """返回已创建的单例；尚未创建时返回 None，不会触发驱动加载。"""
+    return _global_axle_manager
+
+
 def get_axle_manager() -> AxleManager:
     """获取电驱桥系统单例管理器实例。"""
     global _global_axle_manager
     if _global_axle_manager is None:
-        _global_axle_manager = AxleManager()
+        _global_axle_manager = AxleManager(
+            safety_config_path=get_settings().safety_config_path,
+        )
     return _global_axle_manager

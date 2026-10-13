@@ -20,7 +20,11 @@ class CanConnectRequest(BaseModel):
 
 
 class VcuCommandUpdateRequest(BaseModel):
-    """上位机 (VCU) 控制设定值更新请求。"""
+    """上位机 (VCU) 控制设定值更新请求。
+
+    空载台架下线测试只开放电机控制相关信号；手刹、制动、ABS、加速踏板与主动放电
+    属于整车信号，在 VCU_11 中固定按无效值 (0) 发送。
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -36,12 +40,6 @@ class VcuCommandUpdateRequest(BaseModel):
         le=12000,
         description="电机目标转速 (RPM)，分辨率 1",
     )
-    acc_position: float | None = Field(
-        default=None,
-        ge=0.0,
-        le=100.0,
-        description="加速踏板开度 (%)，分辨率 0.1",
-    )
     work_mode_req: int | None = Field(
         default=None,
         ge=0,
@@ -54,35 +52,11 @@ class VcuCommandUpdateRequest(BaseModel):
         le=1,
         description="MCU 使能命令 (0: 未使能, 1: 使能)",
     )
-    hand_brk_sts: int | None = Field(
-        default=None,
-        ge=0,
-        le=1,
-        description="手刹状态 (0: 无效, 1: 有效)",
-    )
-    brk_sts: int | None = Field(
-        default=None,
-        ge=0,
-        le=1,
-        description="制动状态 (0: 无效, 1: 有效)",
-    )
-    abs_work_sts: int | None = Field(
-        default=None,
-        ge=0,
-        le=3,
-        description="ABS工作状态 (0: 未激活, 1: 激活, 2: 忽略, 3: 预留)",
-    )
     gear_sts: int | None = Field(
         default=None,
         ge=1,
-        le=5,
-        description="档位状态 (1: D, 2: R, 3: N, 4: L, 5: P)",
-    )
-    active_discharge: int | None = Field(
-        default=None,
-        ge=0,
-        le=1,
-        description="主动放电命令 (0: 无效, 1: 有效)",
+        le=3,
+        description="档位状态 (1: D, 2: R, 3: N)",
     )
 
 
@@ -91,14 +65,9 @@ class VcuCommandState(BaseModel):
 
     torque_req: float = 0.0
     speed_req: int = 0
-    acc_position: float = 0.0  # 加速踏板开度 (%)
     work_mode_req: int = 3  # 默认速度模式
     mcu_en_cmd: int = 0  # 默认未使能
-    hand_brk_sts: int = 0  # 手刹状态 (0: 无效, 1: 有效)
-    brk_sts: int = 0  # 制动状态 (0: 无效, 1: 有效)
-    abs_work_sts: int = 0  # ABS状态 (0: 未激活, 1: 激活, 2: 忽略, 3: 预留)
     gear_sts: int = 3  # 默认空挡 N
-    active_discharge: int = 0  # 默认不放电
     life: int = 0  # 循环计数器 (0~15)
 
 
@@ -182,13 +151,11 @@ class McuDriveMotor2Telemetry(BaseModel):
     mcu_motor_tor_max: float = 0.0  # 电机最大可用转矩 (Nm)
     mcu_act_motor_spd: int = 0  # 电机转速 (RPM)
     mcu_act_motor_tq: float = 0.0  # 电机实际转矩 (Nm)
-    mcu_active_dischrg_sts: int = 3  # 主动放电状态
     mcu_motor_work_mod: int = 0  # 电机工作模式反馈
     mcu_lv_sts: int = 0  # MCU低压上电状态
     mcu_en_sts: int = 0  # MCU使能状态
     mcu_motor_temp_extre_over: int = 0  # 驱动电机过温故障
     mcu_mcu_temp_extre_over: int = 0  # MCU控制器过温故障
-    mcm_slope_sts: int = 0  # 驻坡状态反馈 (0: 未驻坡, 1: 驻坡)
     mcu_life_2: int = 0  # 循环计数器
 
 
@@ -231,16 +198,26 @@ class AxleSafetyConfig(BaseModel):
         le=210.0,
         description="电机温度自动停机阈值 (℃)",
     )
+    feedback_timeout_ms: int = Field(
+        default=500,
+        ge=100,
+        le=5000,
+        description="使能状态下 MCU_2 (0x35B) 反馈中断自动停机阈值 (ms)",
+    )
+
+
+SafetyMetric = Literal["motor_speed", "motor_torque", "motor_temperature", "feedback_timeout"]
+SafetyUnit = Literal["RPM", "Nm", "℃", "ms"]
 
 
 class AxleSafetyTrip(BaseModel):
     """一次由上位机安全策略触发的急停事件。"""
 
     trip_id: int
-    metric: Literal["motor_speed", "motor_torque", "motor_temperature"]
+    metric: SafetyMetric
     actual_value: float
     threshold: float
-    unit: Literal["RPM", "Nm", "℃"]
+    unit: SafetyUnit
     message: str
     triggered_at: str
 
@@ -301,6 +278,10 @@ class AxleTelemetry(BaseModel):
     # 仅在成功解码 0x35C 后更新，自动温度保护不使用陈旧温度值。
     mcu_tbox_last_rx_timestamp: float | None = None
     safety: AxleSafetyStatus = Field(default_factory=AxleSafetyStatus)
+    # 硬件链路连续异常导致自动断开时的原因；重新连接成功后清空。
+    link_error: str | None = None
+    # 周立功动态库加载失败的原因；为 None 表示驱动可用。
+    driver_error: str | None = None
     tx_frame_count: int = 0
     rx_frame_count: int = 0
     tx_error_count: int = 0

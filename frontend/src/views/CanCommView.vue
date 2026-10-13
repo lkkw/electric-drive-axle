@@ -8,10 +8,11 @@ import {
   PauseIcon,
   PlayIcon,
   Trash2Icon,
+  UnplugIcon,
 } from '@lucide/vue'
 
 import { cn } from '@/lib/utils'
-import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -36,7 +37,15 @@ import {
 } from '@/components/ui/field'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Spinner } from '@/components/ui/spinner'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableEmpty,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { useAxleStore } from '@/stores/useAxleStore'
 import type { CanConnectRequest, CanFrameItem } from '@/types/axle'
@@ -164,6 +173,8 @@ async function handleDisconnect() {
 }
 
 onMounted(async () => {
+  // 其他页面遗留的指令错误不属于本页，进入时清空，避免误导
+  axleStore.error = null
   await axleStore.refreshStatus()
   axleStore.startSse(true)
 
@@ -191,13 +202,27 @@ onBeforeUnmount(() => {
 <template>
   <div class="flex flex-col gap-6 w-full">
     <!-- 顶部导航标题栏 -->
-    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b pb-4 shrink-0">
-      <div>
-        <h1 class="text-2xl font-bold tracking-tight text-foreground">
-          CAN 通讯配置与诊断
-        </h1>
-      </div>
-    </div>
+    <!-- 驱动加载失败：无法打开任何 USBCAN 设备，需修复安装后重启程序 -->
+    <Alert v-if="axleStore.telemetry.driver_error" variant="destructive" class="shrink-0">
+      <AlertTriangleIcon />
+      <AlertTitle>CAN 驱动加载失败，无法连接设备</AlertTitle>
+      <AlertDescription>
+        {{ axleStore.telemetry.driver_error }} 修复后请重启程序。
+      </AlertDescription>
+    </Alert>
+
+    <!-- 硬件链路失效：后端已自动停机并释放设备，需重新连接 -->
+    <Alert
+      v-if="axleStore.linkError && !axleStore.isConnected"
+      variant="destructive"
+      class="shrink-0"
+    >
+      <UnplugIcon />
+      <AlertTitle>CAN 硬件链路中断，通信已自动停止</AlertTitle>
+      <AlertDescription>
+        {{ axleStore.linkError }} 请检查 USBCAN 连接与供电后重新连接。
+      </AlertDescription>
+    </Alert>
 
     <!-- 错误异常提示条 -->
     <Alert v-if="axleStore.error" variant="destructive" class="shrink-0">
@@ -326,7 +351,7 @@ onBeforeUnmount(() => {
                 <Button
                   v-if="!axleStore.isConnected"
                   class="h-11 px-5 font-semibold shadow-xs text-sm"
-                  :disabled="axleStore.loading"
+                  :disabled="axleStore.loading || Boolean(axleStore.telemetry.driver_error)"
                   @click="handleConnect"
                 >
                   <Spinner v-if="axleStore.loading" data-icon="inline-start" />
@@ -353,11 +378,7 @@ onBeforeUnmount(() => {
       <div class="lg:col-span-5">
         <Card class="border-border shadow-xs h-full flex flex-col justify-between">
           <CardHeader class="pb-3 border-b bg-muted/20">
-            <div class="flex items-center justify-between">
-              <div>
-                <CardTitle class="text-base font-semibold">总线收发统计</CardTitle>
-              </div>
-            </div>
+            <CardTitle class="text-base font-semibold">总线收发统计</CardTitle>
           </CardHeader>
 
           <CardContent class="p-4 sm:p-5 flex flex-col gap-3">
@@ -391,21 +412,15 @@ onBeforeUnmount(() => {
               </div>
             </div>
 
-            <div class="grid grid-cols-2 gap-2.5 pt-1 text-xs">
-              <div class="p-2 rounded bg-background border border-border/50">
-                <span class="text-muted-foreground">当前波特率:</span>
-                <span class="font-mono font-bold ml-1.5">{{ axleStore.telemetry.baud_rate / 1000 }} kbps</span>
-              </div>
-              <div class="p-2 rounded bg-background border border-border/50">
-                <span class="text-muted-foreground">最近接收:</span>
-                <span class="font-mono ml-1.5">
-                  {{
-                    axleStore.telemetry.last_rx_timestamp
-                      ? new Date(axleStore.telemetry.last_rx_timestamp * 1000).toTimeString().slice(0, 8)
-                      : '未接收'
-                  }}
-                </span>
-              </div>
+            <div class="flex items-center justify-between text-xs">
+              <span class="text-muted-foreground">最近接收</span>
+              <span class="font-mono">
+                {{
+                  axleStore.telemetry.last_rx_timestamp
+                    ? new Date(axleStore.telemetry.last_rx_timestamp * 1000).toTimeString().slice(0, 8)
+                    : '未接收'
+                }}
+              </span>
             </div>
           </CardContent>
         </Card>
@@ -562,14 +577,9 @@ onBeforeUnmount(() => {
                 </TableCell>
               </TableRow>
 
-              <TableRow v-if="processedFrames.length === 0">
-                <TableCell colspan="4" class="py-8 text-center text-muted-foreground font-sans sm:hidden">
-                  暂无报文流
-                </TableCell>
-                <TableCell colspan="7" class="hidden py-8 text-center text-muted-foreground font-sans sm:table-cell">
-                  暂无报文流
-                </TableCell>
-              </TableRow>
+              <TableEmpty v-if="processedFrames.length === 0" :colspan="7">
+                <span class="font-sans text-muted-foreground">暂无报文</span>
+              </TableEmpty>
             </TableBody>
           </Table>
         </ScrollArea>

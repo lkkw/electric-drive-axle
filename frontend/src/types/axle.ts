@@ -10,30 +10,21 @@ export interface CanConnectRequest {
   baud_rate: number
 }
 
+/** 空载台架只开放电机控制量；整车信号 (手刹/制动/ABS/踏板/放电) 由后端固定为无效值 */
 export interface VcuCommandUpdateRequest {
   torque_req?: number
   speed_req?: number
-  acc_position?: number
   work_mode_req?: number
   mcu_en_cmd?: number
-  hand_brk_sts?: number
-  brk_sts?: number
-  abs_work_sts?: number
   gear_sts?: number
-  active_discharge?: number
 }
 
 export interface VcuCommandState {
   torque_req: number
   speed_req: number
-  acc_position?: number
   work_mode_req: number
   mcu_en_cmd: number
-  hand_brk_sts?: number
-  brk_sts?: number
-  abs_work_sts?: number
   gear_sts: number
-  active_discharge: number
   life: number
 }
 
@@ -84,13 +75,11 @@ export interface McuDriveMotor2Telemetry {
   mcu_motor_tor_max: number
   mcu_act_motor_spd: number
   mcu_act_motor_tq: number
-  mcu_active_dischrg_sts: number
   mcu_motor_work_mod: number
   mcu_lv_sts: number
   mcu_en_sts: number
   mcu_motor_temp_extre_over: number
   mcu_mcu_temp_extre_over: number
-  mcm_slope_sts: number
   mcu_life_2: number
 }
 
@@ -108,14 +97,22 @@ export interface AxleSafetyConfig {
   max_motor_speed_rpm: number
   max_motor_torque_nm: number
   max_motor_temp_c: number
+  /** 使能状态下 MCU_2 (0x35B) 反馈中断自动停机阈值 (ms) */
+  feedback_timeout_ms: number
 }
+
+export type SafetyMetric =
+  | 'motor_speed'
+  | 'motor_torque'
+  | 'motor_temperature'
+  | 'feedback_timeout'
 
 export interface AxleSafetyTrip {
   trip_id: number
-  metric: 'motor_speed' | 'motor_torque' | 'motor_temperature'
+  metric: SafetyMetric
   actual_value: number
   threshold: number
-  unit: 'RPM' | 'Nm' | '℃'
+  unit: 'RPM' | 'Nm' | '℃' | 'ms'
   message: string
   triggered_at: string
 }
@@ -160,6 +157,10 @@ export interface AxleTelemetry {
   mcu_tbox: McuTboxTelemetry
   mcu_tbox_last_rx_timestamp: number | null
   safety: AxleSafetyStatus
+  /** 硬件链路连续异常导致自动断开时的原因；重新连接成功后为 null */
+  link_error: string | null
+  /** 周立功动态库加载失败的原因；null 表示驱动可用 */
+  driver_error: string | null
   tx_frame_count: number
   rx_frame_count: number
   tx_error_count: number
@@ -188,8 +189,6 @@ export const GEAR_MAP: Record<number, string> = {
   1: 'D (前进)',
   2: 'R (倒退)',
   3: 'N (空挡)',
-  4: 'L (爬坡)',
-  5: 'P (驻车)',
 }
 
 export const FAULT_LEVEL_MAP: Record<number, { text: string }> = {
@@ -216,6 +215,8 @@ export interface SafetyConfigRecord {
   max_motor_speed_rpm: number
   max_motor_torque_nm: number
   max_motor_temp_c: number
+  /** 旧版本记录无此字段 */
+  feedback_timeout_ms?: number
 }
 
 export const MOTOR_STATE_MAP: Record<number, string> = {
@@ -224,12 +225,6 @@ export const MOTOR_STATE_MAP: Record<number, string> = {
   3: '停机关闭',
   4: '系统就绪',
   255: '无效状态',
-}
-
-/** 驻坡状态反馈 */
-export const MCM_SLOPE_STATE_MAP: Record<number, string> = {
-  0: '未驻坡',
-  1: '驻坡中',
 }
 
 /**

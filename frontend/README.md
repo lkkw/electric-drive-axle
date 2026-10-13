@@ -1,26 +1,15 @@
-# Frontend
+# 前端
 
-Vue 3 + TypeScript frontend with Pinia, Alova, Tailwind CSS v4, shadcn/vue,
-Apache ECharts, and vue-echarts.
+Vue 3 + TypeScript + Pinia + Alova + Tailwind CSS v4 + shadcn/vue + ECharts。
 
 ```powershell
 pnpm install
-pnpm dev
-```
-
-The Vite development server proxies `/api` to `http://127.0.0.1:8000`.
-Override `VITE_API_BASE_URL` when the API is deployed elsewhere.
-
-Run all frontend checks with:
-
-```powershell
+pnpm dev          # http://127.0.0.1:5173，/api 代理到 http://127.0.0.1:8000
 pnpm type-check
 pnpm test
 pnpm build
 ```
 
-`src/components/charts/RealtimeLineChart.vue` is the reusable Canvas chart.
-`src/composables/useRealtimeSeries.ts` provides batched snapshots backed by a
-fixed-size ring buffer, so incoming SSE messages do not trigger one chart redraw
-per message. ECharts modules are registered on demand in
-`src/components/charts/echarts.ts`, and the demo page lazy-loads the chart chunk.
+UI 组件编写规范见根目录 `.agents/skills/shadcn-vue/`。
+
+完整说明见根目录 [README.md](../README.md) 与 [docs/技术文档.md](../docs/技术文档.md)。

@@ -1,14 +1,11 @@
 <script setup lang="ts">
-import {
-  AlertTriangleIcon,
-  CheckCircle2Icon,
-  CircleOffIcon,
-} from '@lucide/vue'
+import { UnplugIcon } from '@lucide/vue'
 import { RouterLink } from 'vue-router'
 
-import { cn } from '@/lib/utils'
-import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { SITE_HEADER_ACTIONS } from '@/components/layout/headerActions'
 import AxleTelemetryChart from '@/components/axle/AxleTelemetryChart.vue'
 import McuTelemetryCard from '@/components/axle/McuTelemetryCard.vue'
 import VcuCommandCard from '@/components/axle/VcuCommandCard.vue'
@@ -19,44 +16,30 @@ const axleStore = useAxleStore()
 
 <template>
   <div class="flex flex-col gap-6 w-full">
-    <!-- 顶部状态标题栏 -->
-    <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-      <div>
-        <h1 class="text-2xl font-bold tracking-tight text-foreground">
-          电驱桥控制台
-        </h1>
-      </div>
+    <!-- 硬件在线状态入口：放在顶部栏标题右侧，避免页面内再占一行 -->
+    <Teleport defer :to="SITE_HEADER_ACTIONS">
+      <Button as-child variant="outline" size="sm">
+        <RouterLink to="/can">
+          <Badge :variant="axleStore.isConnected ? 'success' : 'warning'">
+            {{ axleStore.isConnected ? 'CAN 在线' : 'CAN 未连接' }}
+          </Badge>
+          <span>
+            {{
+              axleStore.isConnected
+                ? `通道 ${axleStore.telemetry.channel} · ${axleStore.telemetry.baud_rate / 1000}k`
+                : '去连接'
+            }}
+          </span>
+        </RouterLink>
+      </Button>
+    </Teleport>
 
-      <!-- 硬件在线状态入口 -->
-      <div class="flex items-center gap-2">
-        <Button
-          as-child
-          variant="outline"
-          size="sm"
-          :class="cn(
-            'font-semibold',
-            axleStore.isConnected
-              ? 'border-success/50 text-success hover:bg-success/10 hover:text-success'
-              : 'border-warning/50 text-warning hover:bg-warning/10 hover:text-warning',
-          )"
-        >
-          <RouterLink to="/can">
-          <component
-            :is="axleStore.isConnected ? CheckCircle2Icon : CircleOffIcon"
-            data-icon="inline-start"
-          />
-          <span>{{ axleStore.isConnected ? `CAN 在线 (通道 ${axleStore.telemetry.channel} · ${axleStore.telemetry.baud_rate / 1000}k)` : 'CAN 未连接 (点击前往配置)' }}</span>
-          </RouterLink>
-        </Button>
-      </div>
-    </div>
-
-    <!-- 报警/错误异常提示条 -->
-    <Alert v-if="axleStore.error" variant="destructive">
-      <AlertTriangleIcon />
+    <!-- 硬件链路失效：后端已自动停机并释放设备 -->
+    <Alert v-if="axleStore.linkError && !axleStore.isConnected" variant="destructive">
+      <UnplugIcon />
+      <AlertTitle>CAN 硬件链路中断，通信已自动停止</AlertTitle>
       <AlertDescription>
-        <span class="font-semibold">通信异常警示: </span>
-        <span>{{ axleStore.error }}</span>
+        {{ axleStore.linkError }} 请检查 USBCAN 连接与供电后，前往 CAN 通信页重新连接。
       </AlertDescription>
     </Alert>
 

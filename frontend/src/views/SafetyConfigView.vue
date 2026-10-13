@@ -1,14 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import {
-  AlertTriangleIcon,
-  CheckCircle2Icon,
-  ClockIcon,
-  HistoryIcon,
-  SaveIcon,
-  ShieldCheckIcon,
-  Trash2Icon,
-} from '@lucide/vue'
+import { AlertTriangleIcon, SaveIcon, Trash2Icon } from '@lucide/vue'
+import { toast } from 'vue-sonner'
 
 import { getSafetyConfig, updateSafetyConfig } from '@/api/axle'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
@@ -37,54 +30,41 @@ import {
   Table,
   TableBody,
   TableCell,
+  TableEmpty,
   TableHead,
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import { SITE_HEADER_ACTIONS } from '@/components/layout/headerActions'
 import { useAxleStore } from '@/stores/useAxleStore'
 import type { AxleSafetyConfig, SafetyConfigRecord } from '@/types/axle'
+import {
+  SAFETY_HISTORY_STORAGE_KEY,
+  parseSafetyHistory,
+  prependSafetyHistory,
+} from './safetyConfigHistory'
 
 const axleStore = useAxleStore()
 
-const STORAGE_KEY = 'axle_safety_config_history'
-/** 最大历史保存记录上限条数 */
-const MAX_HISTORY_RECORDS = 100
+/** 历史表格列数，用于空状态跨列 */
+const HISTORY_COLUMN_COUNT = 7
 
 const config = ref<AxleSafetyConfig>({
   enabled: true,
   max_motor_speed_rpm: 3000,
   max_motor_torque_nm: 10,
   max_motor_temp_c: 150,
+  feedback_timeout_ms: 500,
 })
 const isLoading = ref(true)
 const isSaving = ref(false)
 const saveError = ref<string | null>(null)
-const saved = ref(false)
-
-/** 最近一次保存生成的详细记录快照 */
-const lastSavedRecord = ref<SafetyConfigRecord | null>(null)
-
 /** 配置保存与下发生效历史审计列表 (上限 100 条) */
 const savedHistory = ref<SafetyConfigRecord[]>([])
 
-/** 从本地 localStorage 加载保存记录 */
 function loadHistoryFromStorage(): SafetyConfigRecord[] {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return []
-    const parsed: unknown = JSON.parse(raw)
-    if (!Array.isArray(parsed)) return []
-    return parsed.filter(
-      (item): item is SafetyConfigRecord =>
-        typeof item === 'object' &&
-        item !== null &&
-        typeof item.id === 'string' &&
-        typeof item.timestamp === 'string' &&
-        typeof item.enabled === 'boolean' &&
-        typeof item.max_motor_speed_rpm === 'number' &&
-        typeof item.max_motor_torque_nm === 'number' &&
-        typeof item.max_motor_temp_c === 'number',
-    )
+    return parseSafetyHistory(localStorage.getItem(SAFETY_HISTORY_STORAGE_KEY))
   } catch {
     return []
   }
@@ -93,7 +73,7 @@ function loadHistoryFromStorage(): SafetyConfigRecord[] {
 /** 持久化保存记录至 localStorage */
 function saveHistoryToStorage(records: SafetyConfigRecord[]) {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(records))
+    localStorage.setItem(SAFETY_HISTORY_STORAGE_KEY, JSON.stringify(records))
   } catch {
     // 忽略异常，防止无痕模式或存储空间满时阻塞操作
   }
@@ -102,9 +82,8 @@ function saveHistoryToStorage(records: SafetyConfigRecord[]) {
 /** 清空本地保存审计记录 */
 function clearSavedHistory() {
   savedHistory.value = []
-  lastSavedRecord.value = null
   try {
-    localStorage.removeItem(STORAGE_KEY)
+    localStorage.removeItem(SAFETY_HISTORY_STORAGE_KEY)
   } catch {
     // 忽略异常
   }
@@ -124,13 +103,24 @@ const torqueInvalid = computed(() =>
 const temperatureInvalid = computed(() =>
   !isWithinRange(config.value.max_motor_temp_c, 0, 210),
 )
+const feedbackTimeoutInvalid = computed(() => {
+  const value = Number(config.value.feedback_timeout_ms)
+  return !Number.isInteger(value) || value < 100 || value > 5000
+})
 const hasInvalidThreshold = computed(() =>
-  speedInvalid.value || torqueInvalid.value || temperatureInvalid.value,
+  speedInvalid.value ||
+  torqueInvalid.value ||
+  temperatureInvalid.value ||
+  feedbackTimeoutInvalid.value,
 )
 const lastTrip = computed(() => axleStore.telemetry.safety.last_trip)
 
 function formatTriggeredAt(timestamp: string) {
   return new Date(timestamp).toLocaleString('zh-CN', { hour12: false })
+}
+
+function formatFeedbackTimeout(value: number | undefined) {
+  return value === undefined ? '—' : `${value} ms`
 }
 
 async function loadSafetyConfig() {
@@ -153,7 +143,6 @@ async function saveSafetyConfig() {
 
   isSaving.value = true
   saveError.value = null
-  saved.value = false
 
   try {
     const savedConfig = await updateSafetyConfig({
@@ -161,11 +150,11 @@ async function saveSafetyConfig() {
       max_motor_speed_rpm: Number(config.value.max_motor_speed_rpm),
       max_motor_torque_nm: Number(config.value.max_motor_torque_nm),
       max_motor_temp_c: Number(config.value.max_motor_temp_c),
+      feedback_timeout_ms: Number(config.value.feedback_timeout_ms),
     }).send()
     config.value = savedConfig
-    saved.value = true
 
-    // 详细记录当前保存时间戳以及转速、扭矩、温度参数值
+    // 详细记录当前保存时间戳以及各项阈值
     const now = new Date()
     const record: SafetyConfigRecord = {
       id: `cfg-${now.getTime()}`,
@@ -183,13 +172,14 @@ async function saveSafetyConfig() {
       max_motor_speed_rpm: savedConfig.max_motor_speed_rpm,
       max_motor_torque_nm: savedConfig.max_motor_torque_nm,
       max_motor_temp_c: savedConfig.max_motor_temp_c,
+      feedback_timeout_ms: savedConfig.feedback_timeout_ms,
     }
 
-    lastSavedRecord.value = record
-    savedHistory.value = [record, ...savedHistory.value.filter((r) => r.id !== record.id)].slice(0, MAX_HISTORY_RECORDS)
+    savedHistory.value = prependSafetyHistory(savedHistory.value, record)
     saveHistoryToStorage(savedHistory.value)
+    toast.success(savedConfig.enabled ? '安全配置已保存并生效' : '安全监控已停用')
 
-    await axleStore.refreshStatus()
+    if (!axleStore.sseConnected) await axleStore.refreshStatus()
   } catch (error) {
     saveError.value = error instanceof Error ? error.message : '保存安全配置失败'
   } finally {
@@ -198,44 +188,27 @@ async function saveSafetyConfig() {
 }
 
 onMounted(async () => {
-  savedHistory.value = loadHistoryFromStorage().slice(0, MAX_HISTORY_RECORDS)
-  if (savedHistory.value.length > 0) {
-    lastSavedRecord.value = savedHistory.value[0]
-  }
+  savedHistory.value = loadHistoryFromStorage()
   await loadSafetyConfig()
 })
 </script>
 
 <template>
   <div class="flex w-full flex-col gap-6">
-    <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-      <div>
-        <div class="flex items-center gap-2">
-          <ShieldCheckIcon class="size-5 text-primary" />
-          <h1 class="text-2xl font-bold tracking-tight text-foreground">
-            安全配置
-          </h1>
-        </div>
-        <p class="mt-1 text-sm text-muted-foreground">
-          设置实时反馈越限后的安全监控条件。
-        </p>
-      </div>
-
-      <div class="flex flex-wrap items-center gap-2">
-        <Badge :variant="config.enabled ? 'success' : 'secondary'">
-          {{ config.enabled ? '安全监控已启用' : '安全监控未启用' }}
-        </Badge>
-        <Badge v-if="axleStore.telemetry.is_emergency_locked" variant="destructive">
-          急停互锁中
-        </Badge>
-      </div>
-    </div>
+    <Teleport defer :to="SITE_HEADER_ACTIONS">
+      <Badge :variant="config.enabled ? 'success' : 'secondary'">
+        {{ config.enabled ? '安全监控已启用' : '安全监控未启用' }}
+      </Badge>
+      <Badge v-if="axleStore.isEmergencyLocked" variant="destructive">
+        急停互锁中 · 请到控制台复位
+      </Badge>
+    </Teleport>
 
     <Card>
       <CardHeader class="border-b pb-4">
         <CardTitle>安全监控阈值</CardTitle>
         <CardDescription>
-          转速与转矩按绝对值判断，正反转和驱动/回馈转矩均受保护。
+          转速与转矩按绝对值判断；配置保存在本机，重启后保留。
         </CardDescription>
       </CardHeader>
 
@@ -246,12 +219,12 @@ onMounted(async () => {
             <FieldContent>
               <FieldLabel for="auto-emergency-stop">启用安全监控</FieldLabel>
               <FieldDescription>
-                任一已配置阈值被实时反馈超过时，立即进入急停互锁。
+                任一阈值被实时反馈超过，或使能期间 MCU 反馈中断时，立即进入急停互锁。
               </FieldDescription>
             </FieldContent>
           </Field>
 
-          <div class="grid grid-cols-1 gap-5 md:grid-cols-3">
+          <div class="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-4">
             <Field :data-invalid="speedInvalid || undefined">
               <FieldLabel for="max-motor-speed">最大绝对转速 (RPM)</FieldLabel>
               <Input
@@ -296,6 +269,24 @@ onMounted(async () => {
               />
               <FieldError v-if="temperatureInvalid">请输入大于 0 且不超过 210 的数值。</FieldError>
             </Field>
+
+            <Field :data-invalid="feedbackTimeoutInvalid || undefined">
+              <FieldLabel for="feedback-timeout">反馈中断超时 (ms)</FieldLabel>
+              <Input
+                id="feedback-timeout"
+                v-model.number="config.feedback_timeout_ms"
+                type="number"
+                min="100"
+                max="5000"
+                step="50"
+                :disabled="isLoading"
+                :aria-invalid="feedbackTimeoutInvalid || undefined"
+              />
+              <FieldDescription v-if="!feedbackTimeoutInvalid">
+                MCU_2 (0x35B) 周期 10 ms。
+              </FieldDescription>
+              <FieldError v-else>请输入 100–5000 之间的整数。</FieldError>
+            </Field>
           </div>
         </FieldGroup>
       </CardContent>
@@ -319,67 +310,16 @@ onMounted(async () => {
       <AlertDescription>{{ saveError }}</AlertDescription>
     </Alert>
 
-    <!-- 配置保存成功详细凭据 -->
-    <Alert v-else-if="saved && lastSavedRecord" class="border-success/30 bg-success/5">
-      <ShieldCheckIcon class="text-success" />
-      <div class="flex flex-col gap-2.5 w-full">
-        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5">
-          <AlertTitle class="text-success font-bold flex items-center gap-1.5">
-            安全配置已保存并生效
-          </AlertTitle>
-          <span class="text-xs font-mono text-muted-foreground flex items-center gap-1">
-            <ClockIcon class="size-3.5" />
-            保存时间戳: {{ lastSavedRecord.timestamp }}
-          </span>
-        </div>
-
-        <AlertDescription class="flex flex-col gap-2">
-          <p class="text-xs text-foreground/85">
-            {{ lastSavedRecord.enabled ? '参数已下发并生效。' : '安全监控已停用。' }}
-          </p>
-
-          <!-- 详细记录快照徽章展示 -->
-          <div class="flex flex-wrap items-center gap-2 pt-1 text-xs">
-            <Badge :variant="lastSavedRecord.enabled ? 'success' : 'secondary'">
-              {{ lastSavedRecord.enabled ? '监控已启用' : '监控已关闭' }}
-            </Badge>
-            <Badge variant="outline" class="font-mono bg-background text-foreground border-border">
-              转速阈值: {{ lastSavedRecord.max_motor_speed_rpm }} RPM
-            </Badge>
-            <Badge variant="outline" class="font-mono bg-background text-foreground border-border">
-              扭矩阈值: {{ lastSavedRecord.max_motor_torque_nm }} Nm
-            </Badge>
-            <Badge variant="outline" class="font-mono bg-background text-foreground border-border">
-              温度阈值: {{ lastSavedRecord.max_motor_temp_c }} ℃
-            </Badge>
-          </div>
-        </AlertDescription>
-      </div>
-    </Alert>
-
     <!-- 配置保存与审计记录表格 -->
     <Card>
-      <CardHeader class="border-b pb-3 bg-muted/20">
-        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-          <div>
-            <CardTitle class="text-base font-semibold flex items-center gap-2">
-              <HistoryIcon class="size-4 text-primary" />
-              配置保存与审计记录
-            </CardTitle>
-            <CardDescription class="mt-0.5">
-              记录上位机安全保护阈值的历史下发时间戳及参数快照。
-            </CardDescription>
-          </div>
+      <CardHeader class="border-b pb-3">
+        <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <CardTitle>配置保存记录</CardTitle>
           <div v-if="savedHistory.length > 0" class="flex items-center gap-2">
-            <Badge variant="secondary" class="font-mono text-xs">
-              共 {{ savedHistory.length }} 条记录 (上限 {{ MAX_HISTORY_RECORDS }} 条)
+            <Badge variant="secondary">
+              共 {{ savedHistory.length }} 条
             </Badge>
-            <Button
-              variant="outline"
-              size="sm"
-              class="h-7 px-2 text-xs text-muted-foreground hover:text-destructive"
-              @click="clearSavedHistory"
-            >
+            <Button variant="outline" size="sm" @click="clearSavedHistory">
               <Trash2Icon data-icon="inline-start" />
               清空记录
             </Button>
@@ -388,73 +328,51 @@ onMounted(async () => {
       </CardHeader>
 
       <CardContent class="p-0">
-        <div v-if="savedHistory.length > 0" class="max-h-[520px] overflow-auto">
+        <div class="max-h-[520px] overflow-auto">
           <Table>
-            <TableHeader class="bg-muted/95 sticky top-0 z-10 backdrop-blur-xs">
+            <TableHeader class="sticky top-0 z-10 bg-muted">
               <TableRow>
                 <TableHead class="w-12 text-center">序号</TableHead>
                 <TableHead class="min-w-44">保存时间戳</TableHead>
-                <TableHead class="min-w-28">安全监控状态</TableHead>
-                <TableHead class="min-w-32">绝对转速 (RPM)</TableHead>
-                <TableHead class="min-w-32">绝对转矩 (Nm)</TableHead>
-                <TableHead class="min-w-32">最高温度 (℃)</TableHead>
-                <TableHead class="text-right pr-4">生效状态</TableHead>
+                <TableHead class="min-w-28">安全监控</TableHead>
+                <TableHead class="min-w-28">绝对转速 (RPM)</TableHead>
+                <TableHead class="min-w-28">绝对转矩 (Nm)</TableHead>
+                <TableHead class="min-w-28">最高温度 (℃)</TableHead>
+                <TableHead class="min-w-28">反馈超时</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              <TableRow
-                v-for="(item, index) in savedHistory"
-                :key="item.id"
-                :class="index === 0 ? 'bg-muted/20 font-medium' : undefined"
-              >
-                <TableCell class="text-center font-mono text-xs text-muted-foreground">
-                  {{ index + 1 }}
-                </TableCell>
-                <TableCell class="font-mono text-xs">
-                  <div class="flex items-center gap-1.5">
-                    <span>{{ item.timestamp }}</span>
-                    <Badge
-                      v-if="index === 0"
-                      variant="success"
-                      class="text-[10px] px-1 py-0 h-4"
-                    >
-                      最新生效
+              <template v-if="savedHistory.length > 0">
+                <TableRow v-for="(item, index) in savedHistory" :key="item.id">
+                  <TableCell class="text-center font-mono text-muted-foreground">
+                    {{ index + 1 }}
+                  </TableCell>
+                  <TableCell class="font-mono">
+                    <div class="flex items-center gap-1.5">
+                      <span>{{ item.timestamp }}</span>
+                      <Badge v-if="index === 0" variant="success">最新生效</Badge>
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    <Badge :variant="item.enabled ? 'success' : 'secondary'">
+                      {{ item.enabled ? '已启用' : '已关闭' }}
                     </Badge>
-                  </div>
-                </TableCell>
-                <TableCell>
-                  <Badge
-                    :variant="item.enabled ? 'success' : 'secondary'"
-                    class="text-xs"
-                  >
-                    {{ item.enabled ? '已启用' : '已关闭' }}
-                  </Badge>
-                </TableCell>
-                <TableCell class="font-mono text-xs">
-                  {{ item.max_motor_speed_rpm }} RPM
-                </TableCell>
-                <TableCell class="font-mono text-xs">
-                  {{ item.max_motor_torque_nm }} Nm
-                </TableCell>
-                <TableCell class="font-mono text-xs">
-                  {{ item.max_motor_temp_c }} ℃
-                </TableCell>
-                <TableCell class="text-right pr-4 text-xs">
-                  <span class="text-success font-semibold inline-flex items-center gap-1">
-                    <CheckCircle2Icon class="size-3.5" />
-                    已成功生效
-                  </span>
-                </TableCell>
-              </TableRow>
+                  </TableCell>
+                  <TableCell class="font-mono">{{ item.max_motor_speed_rpm }}</TableCell>
+                  <TableCell class="font-mono">{{ item.max_motor_torque_nm }}</TableCell>
+                  <TableCell class="font-mono">{{ item.max_motor_temp_c }}</TableCell>
+                  <TableCell class="font-mono">
+                    {{ formatFeedbackTimeout(item.feedback_timeout_ms) }}
+                  </TableCell>
+                </TableRow>
+              </template>
+              <TableEmpty v-else :colspan="HISTORY_COLUMN_COUNT">
+                <span class="text-muted-foreground">
+                  暂无本地保存记录。修改参数并点击“保存配置”后将在此记录。
+                </span>
+              </TableEmpty>
             </TableBody>
           </Table>
-        </div>
-
-        <div
-          v-else
-          class="py-8 text-center text-xs text-muted-foreground"
-        >
-          暂无本地保存记录。在上方表单修改参数并点击“保存配置”后将在此详细记录。
         </div>
       </CardContent>
     </Card>

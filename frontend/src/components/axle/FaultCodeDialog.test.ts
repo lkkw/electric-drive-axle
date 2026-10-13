@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 
 import {
   getMcuFaultInfo,
-  MCM_SLOPE_STATE_MAP,
   MCU_FAULT_CODES,
   MCU_FAULT_MAP,
 } from '@/types/axle'
@@ -64,11 +63,6 @@ describe('FaultCodeDialog & Fault Code Mapping Specifications', () => {
     for (const item of MCU_FAULT_CODES) {
       expect(MCU_FAULT_MAP[item.raw_code]).toEqual(item)
     }
-  })
-
-  it('驻坡状态 (MCM_Slope_Sts) 映射正确', () => {
-    expect(MCM_SLOPE_STATE_MAP[0]).toBe('未驻坡')
-    expect(MCM_SLOPE_STATE_MAP[1]).toBe('驻坡中')
   })
 
   it('检索过滤逻辑能够准确匹配故障码、十进制数值、十六进制及含义描述', () => {

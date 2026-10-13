@@ -10,7 +10,6 @@ import {
 } from '@/components/ui/collapsible'
 import {
   SidebarGroup,
-  SidebarGroupLabel,
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
@@ -38,7 +37,6 @@ defineProps<{
 
 <template>
   <SidebarGroup>
-    <SidebarGroupLabel class="mb-1.5">台架导航</SidebarGroupLabel>
     <SidebarMenu class="gap-2">
       <template v-for="item in items" :key="item.title">
         <!-- 有子菜单的项：Collapsible 折叠展开 -->

@@ -2,6 +2,7 @@
 import {
   CheckCircle2,
   Cpu,
+  Package,
   Phone,
   Radio,
   Users,
@@ -37,7 +38,14 @@ interface SystemSpec {
   badge?: string
 }
 
+const appVersion = __APP_VERSION__
+
 const specs: readonly SystemSpec[] = [
+  {
+    label: '软件版本',
+    value: `v${appVersion} · 构建于 ${__BUILD_TIME__}`,
+    icon: Package,
+  },
   {
     label: '开发团队',
     value: '电驱系统研究所',
@@ -80,9 +88,7 @@ const specs: readonly SystemSpec[] = [
               <DialogTitle class="text-base font-bold sm:text-lg">
                 株齿 2.5T 电驱桥下线测试上位机
               </DialogTitle>
-              <Badge variant="secondary" class="font-mono text-[11px] px-1.5 py-0">
-                v1.0.0
-              </Badge>
+              <Badge variant="secondary" class="font-mono">v{{ appVersion }}</Badge>
             </div>
             <DialogDescription class="text-xs text-muted-foreground mt-0.5">
               株齿 2.5T 电驱桥 EOL 下线测试、通讯诊断与台架标定平台

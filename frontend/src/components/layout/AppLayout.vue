@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted } from 'vue'
+import { onBeforeUnmount, onMounted, watch } from 'vue'
+import { toast } from 'vue-sonner'
 
 import SafetyTripDialog from '@/components/axle/SafetyTripDialog.vue'
 import AppSidebar from '@/components/layout/AppSidebar.vue'
@@ -9,6 +10,19 @@ import { useAxleStore } from '@/stores/useAxleStore'
 
 const axleStore = useAxleStore()
 let cancelControlViewPreload: (() => void) | undefined
+
+// 链路失效可能发生在任意页面，全局提示一次；页面内的 Alert 负责持续展示。
+watch(
+  () => axleStore.linkError,
+  (reason, previous) => {
+    if (reason && reason !== previous) {
+      toast.error('CAN 硬件链路中断，通信已自动停止', {
+        description: reason,
+        duration: 8000,
+      })
+    }
+  },
+)
 
 onMounted(() => {
   axleStore.startSse()

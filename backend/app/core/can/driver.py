@@ -10,6 +10,7 @@ import ctypes
 import os
 import platform
 import sys
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from ctypes import (
@@ -22,6 +23,7 @@ from ctypes import (
 )
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from app.core.can.constants import BAUDRATE_TIMINGS, ZcanDeviceType
 from app.core.can.zlgcan_types import (
@@ -41,6 +43,9 @@ from app.core.can.zlgcan_types import (
 
 # C 驱动调用默认超时（秒）：防止 USB 断开时线程永久阻塞
 _C_CALL_TIMEOUT: float = 5.0
+# 周期收发调用超时（秒）：单帧收发正常耗时为毫秒级，超时即视为硬件链路异常，
+# 让上层尽快判定掉线，而不是让 10ms 控制循环卡住数秒。
+_IO_CALL_TIMEOUT: float = 0.5
 
 
 class CanDriverError(Exception):
@@ -100,7 +105,7 @@ class ZlgCanDriver:
     def __init__(
         self,
         dll_path: str | Path | None = None,
-        max_workers: int = 4,
+        max_workers: int = 6,
     ) -> None:
         """初始化 ZLG CAN 驱动。
 
@@ -126,6 +131,29 @@ class ZlgCanDriver:
     def is_channel_open(self, channel: int = 0) -> bool:
         """指定通道是否已启动。"""
         return self._channel_handles.get(channel, INVALID_CHANNEL_HANDLE) != INVALID_CHANNEL_HANDLE
+
+    async def _call(
+        self,
+        limit_seconds: float,
+        description: str,
+        func: Callable[..., Any],
+        *args: Any,
+    ) -> Any:
+        """在线程池中执行一次阻塞 C 调用，并施加统一超时。
+
+        超时只能结束协程侧等待，已进入 C 函数的工作线程无法被强制中断；
+        尚在线程池排队的调用会随 ``wait_for`` 取消而一并撤销，避免堆积。
+        """
+        loop = asyncio.get_running_loop()
+        try:
+            return await asyncio.wait_for(
+                loop.run_in_executor(self._executor, func, *args),
+                timeout=limit_seconds,
+            )
+        except TimeoutError as err:
+            raise CanDriverError(
+                f"{description}超时（{limit_seconds:g}s），硬件可能已断开。"
+            ) from err
 
     @staticmethod
     def _resolve_dll_path(custom_path: str | Path | None) -> Path:
@@ -173,7 +201,13 @@ class ZlgCanDriver:
             if kernel_dir.is_dir():
                 os.add_dll_directory(str(kernel_dir))
 
-        dll = windll.LoadLibrary(str(dll_path))
+        try:
+            dll = windll.LoadLibrary(str(dll_path))
+        except OSError as err:
+            raise CanDriverError(
+                f"加载 {dll_path} 失败: {err}。"
+                "请确认 zlgcan_x64/kerneldlls 目录完整，并已安装 VC++ 运行库与 USBCAN 驱动。"
+            ) from err
 
         # 显式配置 C 函数签名，防止 64 位指针截断 (argtypes & restype)
         dll.ZCAN_OpenDevice.argtypes = [c_uint, c_uint, c_uint]
@@ -227,22 +261,14 @@ class ZlgCanDriver:
         if self.is_device_open:
             return
 
-        loop = asyncio.get_running_loop()
-        try:
-            handle = await asyncio.wait_for(
-                loop.run_in_executor(
-                    self._executor,
-                    self._dll.ZCAN_OpenDevice,
-                    int(device_type),
-                    int(device_index),
-                    0,
-                ),
-                timeout=_C_CALL_TIMEOUT,
-            )
-        except TimeoutError as err:
-            raise CanDriverError(
-                f"打开设备超时（{_C_CALL_TIMEOUT}s），请检查 USB 连接状态。"
-            ) from err
+        handle = await self._call(
+            _C_CALL_TIMEOUT,
+            "打开设备",
+            self._dll.ZCAN_OpenDevice,
+            int(device_type),
+            int(device_index),
+            0,
+        )
 
         if not handle or handle == INVALID_DEVICE_HANDLE:
             raise CanDriverError(f"打开 ZLG 设备失败 (type={device_type}, index={device_index})")
@@ -265,8 +291,6 @@ class ZlgCanDriver:
         if self.is_channel_open(channel):
             return
 
-        loop = asyncio.get_running_loop()
-
         # 1. 查询经典 CAN 控制器 (SJA1000) Timing0/Timing1 映射
         timing = BAUDRATE_TIMINGS.get(baud_rate)
         if not timing:
@@ -281,8 +305,9 @@ class ZlgCanDriver:
         try:
             path_str = f"{channel}/baud_rate"
             val_str = str(baud_rate)
-            await loop.run_in_executor(
-                self._executor,
+            await self._call(
+                _C_CALL_TIMEOUT,
+                "设置波特率属性",
                 self._dll.ZCAN_SetValue,
                 self._device_handle,
                 path_str.encode("utf-8"),
@@ -300,33 +325,32 @@ class ZlgCanDriver:
         init_cfg.config.can.timing1 = t1
         init_cfg.config.can.mode = 0  # 正常收发模式
 
-        try:
-            chn_handle = await asyncio.wait_for(
-                loop.run_in_executor(
-                    self._executor,
-                    self._dll.ZCAN_InitCAN,
-                    self._device_handle,
-                    channel,
-                    byref(init_cfg),
-                ),
-                timeout=_C_CALL_TIMEOUT,
-            )
-        except TimeoutError as err:
-            raise CanDriverError(
-                f"初始化通道 {channel} 超时（{_C_CALL_TIMEOUT}s），请检查硬件状态。"
-            ) from err
+        chn_handle = await self._call(
+            _C_CALL_TIMEOUT,
+            f"初始化通道 {channel} ",
+            self._dll.ZCAN_InitCAN,
+            self._device_handle,
+            channel,
+            byref(init_cfg),
+        )
 
         if not chn_handle or chn_handle == INVALID_CHANNEL_HANDLE:
             raise CanChannelNotOpenError(f"初始化通道 {channel} 失败 (InitCAN)。")
 
         # 4. 启动 CAN 通道
-        start_ret = await loop.run_in_executor(
-            self._executor,
+        start_ret = await self._call(
+            _C_CALL_TIMEOUT,
+            f"启动通道 {channel} ",
             self._dll.ZCAN_StartCAN,
             chn_handle,
         )
         if start_ret != ZCAN_STATUS_OK:
-            await loop.run_in_executor(self._executor, self._dll.ZCAN_ResetCAN, chn_handle)
+            await self._call(
+                _C_CALL_TIMEOUT,
+                f"复位通道 {channel} ",
+                self._dll.ZCAN_ResetCAN,
+                chn_handle,
+            )
             raise CanChannelNotOpenError(f"启动通道 {channel} 失败 (StartCAN)。")
 
         self._channel_handles[channel] = chn_handle
@@ -364,22 +388,14 @@ class ZlgCanDriver:
             for i in range(data_len):
                 tx_obj.frame.data[i] = data[i]
 
-            loop = asyncio.get_running_loop()
-            try:
-                ret = await asyncio.wait_for(
-                    loop.run_in_executor(
-                        self._executor,
-                        self._dll.ZCAN_Transmit,
-                        chn_handle,
-                        byref(tx_obj),
-                        1,
-                    ),
-                    timeout=_C_CALL_TIMEOUT,
-                )
-            except TimeoutError as err:
-                raise CanDriverError(
-                    f"CAN 报文发送超时（{_C_CALL_TIMEOUT}s），硬件可能已断开。"
-                ) from err
+            ret = await self._call(
+                _IO_CALL_TIMEOUT,
+                "CAN 报文发送",
+                self._dll.ZCAN_Transmit,
+                chn_handle,
+                byref(tx_obj),
+                1,
+            )
             return ret == 1
 
     async def receive(
@@ -404,24 +420,16 @@ class ZlgCanDriver:
         if buf_key not in self._rx_buffer_cache:
             self._rx_buffer_cache[buf_key] = (ZCAN_Receive_Data * max_count)()
         rx_buffer = self._rx_buffer_cache[buf_key]
-        loop = asyncio.get_running_loop()
 
-        try:
-            actual_num = await asyncio.wait_for(
-                loop.run_in_executor(
-                    self._executor,
-                    self._dll.ZCAN_Receive,
-                    chn_handle,
-                    ctypes.cast(rx_buffer, P_ZCAN_Receive_Data),
-                    max_count,
-                    wait_time_ms,
-                ),
-                timeout=_C_CALL_TIMEOUT,
-            )
-        except TimeoutError as err:
-            raise CanDriverError(
-                f"CAN 报文接收超时（{_C_CALL_TIMEOUT}s），硬件可能已断开。"
-            ) from err
+        actual_num = await self._call(
+            _IO_CALL_TIMEOUT,
+            "CAN 报文接收",
+            self._dll.ZCAN_Receive,
+            chn_handle,
+            ctypes.cast(rx_buffer, P_ZCAN_Receive_Data),
+            max_count,
+            wait_time_ms,
+        )
 
         if not actual_num or actual_num <= 0:
             return []
@@ -429,8 +437,8 @@ class ZlgCanDriver:
         frames: list[CanRawFrame] = []
         for i in range(actual_num):
             item = rx_buffer[i]
-            dlc = item.frame.can_dlc
-            frame_data = bytes(item.frame.data[j] for j in range(dlc))
+            dlc = min(item.frame.can_dlc, 8)
+            frame_data = bytes(item.frame.data[:dlc])
             frames.append(
                 CanRawFrame(
                     can_id=item.frame.can_id,
@@ -447,9 +455,9 @@ class ZlgCanDriver:
         """异步清空通道缓冲区。"""
         chn_handle = self._channel_handles.get(channel)
         if chn_handle:
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(
-                self._executor,
+            await self._call(
+                _C_CALL_TIMEOUT,
+                f"清空通道 {channel} 缓冲区",
                 self._dll.ZCAN_ClearBuffer,
                 chn_handle,
             )
@@ -458,9 +466,9 @@ class ZlgCanDriver:
         """异步重置并关闭指定通道。"""
         chn_handle = self._channel_handles.pop(channel, None)
         if chn_handle and chn_handle != INVALID_CHANNEL_HANDLE:
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(
-                self._executor,
+            await self._call(
+                _C_CALL_TIMEOUT,
+                f"关闭通道 {channel} ",
                 self._dll.ZCAN_ResetCAN,
                 chn_handle,
             )
@@ -479,10 +487,10 @@ class ZlgCanDriver:
         handle = self._device_handle
         self._device_handle = INVALID_DEVICE_HANDLE
         if handle != INVALID_DEVICE_HANDLE:
-            loop = asyncio.get_running_loop()
             try:
-                await loop.run_in_executor(
-                    self._executor,
+                await self._call(
+                    _C_CALL_TIMEOUT,
+                    "关闭设备",
                     self._dll.ZCAN_CloseDevice,
                     handle,
                 )
@@ -492,3 +500,56 @@ class ZlgCanDriver:
     def shutdown_executor(self) -> None:
         """关闭线程池并取消排队任务。"""
         self._executor.shutdown(wait=False, cancel_futures=True)
+
+
+class UnavailableCanDriver(ZlgCanDriver):
+    """周立功动态库加载失败时的占位驱动。
+
+    保持与 ``ZlgCanDriver`` 相同的接口，使程序仍能启动并在界面上展示失败原因；
+    任何打开设备或收发操作都会抛出带原因的 ``CanDriverError``，释放类操作为空操作。
+    """
+
+    def __init__(self, reason: str) -> None:
+        # 刻意不调用父类构造：不加载 DLL、不创建线程池。
+        self.reason = reason
+        self._device_handle = INVALID_DEVICE_HANDLE
+        self._channel_handles = {}
+
+    def _unavailable(self) -> CanDriverError:
+        return CanDriverError(f"CAN 驱动加载失败: {self.reason}")
+
+    async def open_device(self, device_type: int = 0, device_index: int = 0) -> None:
+        raise self._unavailable()
+
+    async def open_channel(self, channel: int = 0, baud_rate: int = 500000) -> None:
+        raise self._unavailable()
+
+    async def transmit(
+        self,
+        can_id: int,
+        data: bytes,
+        channel: int = 0,
+        is_extended: bool = False,
+        is_remote: bool = False,
+    ) -> bool:
+        raise self._unavailable()
+
+    async def receive(
+        self,
+        channel: int = 0,
+        max_count: int = 50,
+        wait_time_ms: int = 1,
+    ) -> list[CanRawFrame]:
+        raise self._unavailable()
+
+    async def clear_buffer(self, channel: int = 0) -> None:
+        return None
+
+    async def close_channel(self, channel: int = 0) -> None:
+        return None
+
+    async def close_device(self) -> None:
+        return None
+
+    def shutdown_executor(self) -> None:
+        return None
