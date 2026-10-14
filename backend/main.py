@@ -14,6 +14,9 @@ def main() -> None:
         host="127.0.0.1",
         port=8000,
         reload=True,
+        # 前端常开的 SSE 长连接（/stream）不会自己结束；不设超时时热重启会一直卡在
+        # "Waiting for connections to close"。1 s 后强制关闭连接，继续重启。
+        timeout_graceful_shutdown=1,
     )
 
 

@@ -13,6 +13,7 @@ import logging
 import math
 import time
 from collections import deque
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import NamedTuple
@@ -55,6 +56,7 @@ from app.schemas.axle import (
     VcuCommandUpdateRequest,
 )
 from app.services.safety_store import load_safety_config, save_safety_config
+from app.services.test_session import TestSession
 
 logger = logging.getLogger("app.axle_manager")
 # 关键操作与安全事件单独落盘 (events.log)，用于产线追溯。
@@ -63,6 +65,8 @@ events = logging.getLogger(EVENT_LOGGER_NAME)
 # 自动停机只接受近期成功解码的反馈，避免使用断线前残留的遥测值。
 MCU_2_SAFETY_FRESHNESS_SECONDS = 0.5
 MCU_TBOX_SAFETY_FRESHNESS_SECONDS = 1.0
+# 上传 MES 的转速 / 温度超过该时长未更新即视为过期，改传 0
+MES_FEEDBACK_STALE_SECONDS = 2.0
 SHUTDOWN_FRAME_COUNT = 2
 SHUTDOWN_FRAME_TIMEOUT_SECONDS = 0.2
 STREAM_FRAME_LIMIT = 200
@@ -81,12 +85,22 @@ LINK_FAILURE_SECONDS = 1.0
 # 同类高频告警日志的最小输出间隔，避免 10ms 循环刷屏。
 LOG_THROTTLE_SECONDS = 1.0
 
+# 平稳停机：实际转速降到该值以内即认为已停稳，随后关闭使能并切 N 挡。
+SOFT_STOP_SPEED_THRESHOLD_RPM = 30
+# 平稳停机最长等待时间；超时仍强制关闭使能（电机随后自由滑行）。
+SOFT_STOP_TIMEOUT_SECONDS = 30.0
+SOFT_STOP_POLL_SECONDS = 0.05
+
 SAFETY_METRIC_LABELS: dict[SafetyMetric, str] = {
     "motor_speed": "实际转速",
     "motor_torque": "实际转矩",
     "motor_temperature": "电机温度",
     "feedback_timeout": "MCU_2 反馈中断",
+    "plc_safe": "PLC 安全回路",
 }
+
+# 急停 / 链路故障时的外部联动（如 PLC 复位上电请求切断高压），参数为原因
+EmergencyListener = Callable[[str], Awaitable[None]]
 
 
 class _FrameRecord(NamedTuple):
@@ -153,6 +167,8 @@ class AxleManager:
         self._mcu_1 = McuDriveMotor1Telemetry()
         self._mcu_2 = McuDriveMotor2Telemetry()
         self._mcu_tbox = McuTboxTelemetry()
+        # 当前这台电驱桥的试车统计（试车记录用），操作员判定后清零
+        self.test_session = TestSession()
 
         # 通信统计
         self._connected: bool = False
@@ -180,6 +196,9 @@ class AxleManager:
         self._driver_error_streaks: dict[str, tuple[int, float]] = {}
         self._link_error: str | None = None
         self._link_failure_task: asyncio.Task[None] | None = None
+        self._soft_stop_task: asyncio.Task[None] | None = None
+        self._emergency_listeners: list[EmergencyListener] = []
+        self._listener_tasks: set[asyncio.Task[None]] = set()
         self._log_throttle: dict[str, tuple[float, int]] = {}
 
         # 异步循环任务句柄
@@ -318,6 +337,7 @@ class AxleManager:
         # 这样既保留 VCU_Life 连续性，也避免停掉循环后再额外等待一次底层发送调用。
         async with self._lock:
             was_connected = self._connected
+            self._cancel_soft_stop_locked()
             cycle_active = self._cycle_status.status in {"running", "paused"}
             if failure_reason is not None and cycle_active:
                 self._finish_cycle_locked("error", error=failure_reason)
@@ -497,6 +517,8 @@ class AxleManager:
                 return
             await self._disconnect(failure_reason=reason)
             self._link_error = reason
+        # 失去 CAN 控制后电机指令无法送达，同时切断高压
+        self._notify_emergency_listeners(f"CAN 链路故障: {reason}")
         self._broadcast_telemetry()
 
     # ------------------------------------------------------------------
@@ -571,6 +593,7 @@ class AxleManager:
             if self._cycle_status.status in {"running", "paused"}:
                 raise CanDriverError("已有循环测试正在执行。")
 
+            self._cancel_soft_stop_locked()
             self._cycle_generation += 1
             generation = self._cycle_generation
             self._cycle_config = request.model_copy(deep=True)
@@ -747,6 +770,8 @@ class AxleManager:
                         "请先调用 /emergency-reset 复位后再操作。"
                     )
 
+            # 操作员的新指令优先于正在进行的平稳停机。
+            self._cancel_soft_stop_locked()
             self._apply_update_locked(update)
             result = self._command.model_copy()
 
@@ -761,6 +786,7 @@ class AxleManager:
         :param reason: 触发原因，缺省为操作员手动触发；写入安全事件日志
         """
         async with self._lock:
+            self._cancel_soft_stop_locked()
             self._finish_cycle_locked("stopped", error="急停已触发。")
             self._is_emergency_locked = True
 
@@ -794,8 +820,163 @@ class AxleManager:
             events.warning("紧急停机: %s", reason or "操作员手动触发")
             result = self._command.model_copy()
 
+        self._notify_emergency_listeners(reason or "操作员手动急停")
         self._broadcast_telemetry()
         return result
+
+    # ------------------------------------------------------------------
+    # 与 PLC 上电控制的联动
+    # ------------------------------------------------------------------
+    def add_emergency_listener(self, listener: EmergencyListener) -> None:
+        """注册急停 / 链路故障联动（例如 PLC 复位上电请求）。"""
+        self._emergency_listeners.append(listener)
+
+    def _notify_emergency_listeners(self, reason: str) -> None:
+        """在后台执行联动，不让 PLC 通讯拖慢急停接口的返回。"""
+        for listener in self._emergency_listeners:
+            task = asyncio.create_task(listener(reason), name="axle_emergency_listener")
+            self._listener_tasks.add(task)
+            task.add_done_callback(self._listener_tasks.discard)
+
+    def power_on_blocker(self) -> str | None:
+        """PLC 上电前的放行检查；返回拒绝原因，None 表示允许。
+
+        急停互锁不阻止上电：互锁期间电机无法使能，上高压不会让电机转动。
+        """
+        if self._cycle_status.status in {"running", "paused"}:
+            return "循环测试正在执行，请先终止循环测试"
+        if self._connected and self._command.mcu_en_cmd == 1:
+            return "电机仍处于使能状态，请先停机并关闭使能"
+        return None
+
+    def mes_telemetry(self) -> tuple[float, float]:
+        """上传 MES 的 (实际转速 rpm, 电机温度 ℃)；CAN 未连接或反馈过期的一项给 0。"""
+        if not self._connected:
+            return 0.0, 0.0
+        now = time.time()
+        speed = 0.0
+        if (
+            self._mcu_2_last_rx_timestamp is not None
+            and now - self._mcu_2_last_rx_timestamp <= MES_FEEDBACK_STALE_SECONDS
+        ):
+            speed = float(self._mcu_2.mcu_act_motor_spd)
+        temp = 0.0
+        if (
+            self._mcu_tbox_last_rx_timestamp is not None
+            and now - self._mcu_tbox_last_rx_timestamp <= MES_FEEDBACK_STALE_SECONDS
+        ):
+            temp = float(self._mcu_tbox.mcu_motor_temp)
+        return speed, temp
+
+    async def disable_for_power_off(self) -> None:
+        """PLC 下电前：结束循环测试与平稳停机，关闭使能并等待安全帧发出。"""
+        async with self._lock:
+            if not self._connected:
+                return
+            self._cancel_soft_stop_locked()
+            if self._cycle_status.status in {"running", "paused"}:
+                self._finish_cycle_locked("stopped", error="PLC 下电")
+            was_enabled = self._command.mcu_en_cmd == 1
+            self._set_safe_command_locked()
+        self._broadcast_telemetry()
+        # 10 ms 循环至少连续发出几帧“不使能、零转速、N 挡”后再切断高压
+        await asyncio.sleep(TX_INTERVAL_SECONDS * 5)
+        if was_enabled:
+            events.info("PLC 下电前已关闭电机使能")
+
+    async def external_safety_trip(self, metric: SafetyMetric, message: str) -> None:
+        """外部安全条件（如 PLC Safe 断开）触发的自动停机：记录事件并急停。"""
+        self.test_session.on_safety_trip()
+        self._safety_trip_id += 1
+        self._safety_last_trip = AxleSafetyTrip(
+            trip_id=self._safety_trip_id,
+            metric=metric,
+            actual_value=0,
+            threshold=0,
+            unit="",
+            message=message,
+            triggered_at=datetime.now(UTC).isoformat(),
+        )
+        await self.emergency_stop(reason=f"自动安全停机 — {message}")
+
+    @property
+    def is_soft_stopping(self) -> bool:
+        """平稳停机流程是否正在等待电机减速。"""
+        return self._soft_stop_task is not None and not self._soft_stop_task.done()
+
+    def _cancel_soft_stop_locked(self) -> None:
+        """在状态锁内终止平稳停机（新指令、急停、断开或循环测试接管时调用）。"""
+        task = self._soft_stop_task
+        self._soft_stop_task = None
+        if task is not None and task is not asyncio.current_task() and not task.done():
+            task.cancel()
+
+    async def soft_stop(self) -> VcuCommandState:
+        """平稳停机：目标归零让控制器主动减速，转速降到阈值内后自动关闭使能并切 N 挡。
+
+        与急停不同，不进入互锁，停机完成后可直接重新操作。
+        """
+        async with self._lock:
+            if not self._connected:
+                raise CanDriverError("CAN 未连接，无法执行停机。")
+            if self._disconnecting:
+                raise CanDriverError("设备正在停止通信。")
+            if self._cycle_status.status in {"running", "paused"}:
+                raise CanDriverError("循环测试正在执行，请使用“终止并归零”。")
+
+            self._cancel_soft_stop_locked()
+            self._command.torque_req = 0.0
+            self._command.speed_req = 0
+            if self._command.mcu_en_cmd == 1:
+                self._soft_stop_task = asyncio.create_task(
+                    self._soft_stop_loop(),
+                    name="axle_soft_stop",
+                )
+            else:
+                # 未使能时电机不会被驱动，直接切到 N 挡即可。
+                self._command.gear_sts = 3
+            result = self._command.model_copy()
+
+        events.info("平稳停机: 目标转速/转矩已归零，等待电机减速")
+        self._broadcast_telemetry()
+        return result
+
+    async def _soft_stop_loop(self) -> None:
+        """等待实际转速降到阈值内（或超时）后关闭使能并切 N 挡。"""
+        deadline = time.monotonic() + SOFT_STOP_TIMEOUT_SECONDS
+        try:
+            while True:
+                await asyncio.sleep(SOFT_STOP_POLL_SECONDS)
+                async with self._lock:
+                    if self._soft_stop_task is not asyncio.current_task():
+                        return
+                    received_at = self._mcu_2_last_rx_timestamp
+                    has_fresh_feedback = (
+                        received_at is not None
+                        and time.time() - received_at <= MCU_2_SAFETY_FRESHNESS_SECONDS
+                    )
+                    stopped = (
+                        has_fresh_feedback
+                        and abs(self._mcu_2.mcu_act_motor_spd) <= SOFT_STOP_SPEED_THRESHOLD_RPM
+                    )
+                    timed_out = time.monotonic() >= deadline
+                    if not (stopped or timed_out):
+                        continue
+                    self._command.mcu_en_cmd = 0
+                    self._command.gear_sts = 3
+                    self._soft_stop_task = None
+                break
+        except asyncio.CancelledError:
+            return
+
+        if stopped:
+            events.info("平稳停机完成: 电机已停稳，使能已关闭")
+        else:
+            events.warning(
+                "平稳停机超时 (%.0f s)，已强制关闭使能，电机将自由滑行",
+                SOFT_STOP_TIMEOUT_SECONDS,
+            )
+        self._broadcast_telemetry()
 
     async def emergency_reset(self) -> VcuCommandState:
         """复位急停互锁状态 (Emergency Reset)。
@@ -939,6 +1120,7 @@ class AxleManager:
 
     async def _trip_safety(self, violation: _SafetyViolation) -> None:
         """记录自动停机事件并调用既有急停互锁。"""
+        self.test_session.on_safety_trip()
         label = SAFETY_METRIC_LABELS[violation.metric]
         if violation.metric == "feedback_timeout":
             message = (
@@ -1119,6 +1301,7 @@ class AxleManager:
                     else None
                 ),
             ),
+            soft_stopping=self.is_soft_stopping,
             link_error=self._link_error,
             driver_error=self._driver_error,
             tx_frame_count=self._tx_frame_count,
@@ -1371,6 +1554,9 @@ class AxleManager:
                             mcu_tbox_flt_levl=d1.mcu_tbox_flt_levl,
                         )
                         self._mcu_1_last_rx_timestamp = time.time()
+                        self.test_session.on_mcu_1(
+                            bus_current_a=d1.mcu_dc_main_wire_curr, fault_code=d1.mcu_flt_code
+                        )
 
                     case 0x35B:  # CAN_ID_MCU_DRIVE_MOTOR_2
                         frame_name = "MCU_2 (电机转速/转矩)"
@@ -1387,6 +1573,9 @@ class AxleManager:
                             mcu_life_2=d2.mcu_life_2,
                         )
                         self._mcu_2_last_rx_timestamp = time.time()
+                        self.test_session.on_mcu_2(
+                            speed_rpm=d2.mcu_act_motor_spd, torque_nm=d2.mcu_act_motor_tq
+                        )
                         safety_feedback_updated = True
 
                     case 0x35C:  # CAN_ID_MCU_TBOX_DRIVE_MOTOR
@@ -1401,6 +1590,9 @@ class AxleManager:
                             mcu_tbox_life=dt.mcu_tbox_life,
                         )
                         self._mcu_tbox_last_rx_timestamp = time.time()
+                        self.test_session.on_temperature(
+                            motor_temp_c=dt.mcu_motor_temp, controller_temp_c=dt.mcu_ctller_temp
+                        )
                         safety_feedback_updated = True
 
                     case 0x5EF:  # CAN_ID_MCU_SV

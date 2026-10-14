@@ -157,6 +157,7 @@ version = "1.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi", extra = ["standard"] },
+    { name = "python-snap7" },
 ]
 
 [package.dev-dependencies]
@@ -171,7 +172,10 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "fastapi", extras = ["standard"], specifier = ">=0.141.1,<1.0.0" }]
+requires-dist = [
+    { name = "fastapi", extras = ["standard"], specifier = ">=0.141.1,<1.0.0" },
+    { name = "python-snap7", specifier = ">=3.1.2,<4" },
+]
 
 [package.metadata.requires-dev]
 desktop = [
@@ -924,6 +928,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/5b/42/55c32bb9b12693c092ad250a0e82edb5b31ddeda6eb772de5f308b3804ad/python_multipart-0.0.32.tar.gz", hash = "sha256:be54b7f3fa167bb83e4fcd936b887b708f4e57fe75911c02aebf53efaf8d938e", size = 46881, upload-time = "2026-06-04T16:18:58.647Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e1/04/e8135ebd1ad02c56ec633277529b2602ff99ff634be76cdba5744cf554fd/python_multipart-0.0.32-py3-none-any.whl", hash = "sha256:ff6d3f776f16878c894e52e107296ffc890e913c611b1a4ec6c44e2821fe2e23", size = 30042, upload-time = "2026-06-04T16:18:57.319Z" },
+]
+
+[[package]]
+name = "python-snap7"
+version = "3.2.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/3a/af/c9600d0de339469815284a1c3657a9376e17f8a5ff81c3d993f2682b82c3/python_snap7-3.2.1.tar.gz", hash = "sha256:15748f8423e3726457f6c4d0202aabde4ad65f2b809c2c1e7ee4f2f776509c2b", size = 295424, upload-time = "2026-10-04T07:18:34.192Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e9/19/dd8ae9e240eddbadeee9e3b68115b28766e3ac25c755ae2af7c6cc87a566/python_snap7-3.2.1-py3-none-any.whl", hash = "sha256:05d65110169c3ef2edea2aaeb23be598527c46877d5546ee0a7e61a7e37ab198", size = 156107, upload-time = "2026-10-04T07:18:32.612Z" },
 ]
 
 [[package]]

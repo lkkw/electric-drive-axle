@@ -8,5 +8,6 @@ import { Toaster } from '@/components/ui/sonner'
 
 <template>
   <RouterView />
-  <Toaster position="top-right" rich-colors :duration="2500" />
+  <!-- 右下角弹出：避免遮挡顶部栏的紧急停机按钮与 CAN 状态 -->
+  <Toaster position="bottom-right" rich-colors :duration="2500" />
 </template>

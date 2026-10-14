@@ -2,6 +2,8 @@
 import type { SidebarProps } from '@/components/ui/sidebar'
 
 import {
+  ClipboardList,
+  PlugZap,
   Radio,
   ShieldCheck,
   Sliders,
@@ -36,9 +38,19 @@ const navItems = [
     icon: Radio,
   },
   {
+    title: '台架供电',
+    url: '/power',
+    icon: PlugZap,
+  },
+  {
     title: '电驱桥控制台',
     url: '/axle',
     icon: Sliders,
+  },
+  {
+    title: '试车记录',
+    url: '/records',
+    icon: ClipboardList,
   },
   {
     title: '安全配置',
@@ -59,13 +71,14 @@ const navMain = computed(() =>
 <template>
   <Sidebar v-bind="props">
     <!-- 系统品牌标识 -->
-    <SidebarHeader class="p-3">
+    <!-- 左右内边距与导航区 (p-2) 一致，收起后图标才能垂直对齐 -->
+    <SidebarHeader class="px-2 py-3">
       <div class="flex items-center gap-3">
         <div class="flex aspect-square size-8 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground shrink-0 shadow-xs">
           <Zap class="size-4" />
         </div>
         <div class="flex min-w-0 flex-1 items-center text-left group-data-[collapsible=icon]:hidden">
-          <span class="truncate font-bold text-sm text-sidebar-foreground">2.5T电驱桥下线测试</span>
+          <span class="truncate font-bold text-base text-sidebar-foreground">2.5T电驱桥下线测试</span>
         </div>
       </div>
     </SidebarHeader>

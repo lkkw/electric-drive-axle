@@ -8,6 +8,7 @@ import {
   emergencyReset,
   emergencyStop,
   getAxleStatus,
+  softStop,
   getAxleStreamUrl,
   pauseCycleTest,
   resumeCycleTest,
@@ -97,6 +98,7 @@ const createInitialTelemetry = (): AxleTelemetry => ({
     },
     last_trip: null,
   },
+  soft_stopping: false,
   link_error: null,
   driver_error: null,
   tx_frame_count: 0,
@@ -345,6 +347,22 @@ export const useAxleStore = defineStore('axle', () => {
     }
   }
 
+  /** 平稳停机：目标归零让控制器减速，停稳后由后端自动关闭使能 */
+  async function startSoftStop() {
+    loading.value = true
+    error.value = null
+    try {
+      const updated = await softStop().send()
+      telemetry.value.command = updated
+      telemetry.value.soft_stopping = updated.mcu_en_cmd === 1
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : '停机指令下发异常'
+      throw err
+    } finally {
+      loading.value = false
+    }
+  }
+
   /** 手动拉取一次系统状态快照 */
   async function refreshStatus() {
     try {
@@ -403,6 +421,7 @@ export const useAxleStore = defineStore('axle', () => {
     stopCycle,
     triggerEmergencyStop,
     resetEmergencyStop,
+    startSoftStop,
     refreshStatus,
     sendRawFrame,
     clearFrames,

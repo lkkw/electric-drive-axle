@@ -224,3 +224,10 @@ def test_command_rejects_vehicle_only_signals_and_unused_gears() -> None:
     ):
         response = client.post("/api/v1/axle/command", json=payload)
         assert response.status_code == 422, payload
+
+
+def test_soft_stop_requires_connection() -> None:
+    """未连接时平稳停机返回 409 并说明原因。"""
+    response = client.post("/api/v1/axle/soft-stop")
+    assert response.status_code == 409
+    assert "未连接" in response.json()["detail"]

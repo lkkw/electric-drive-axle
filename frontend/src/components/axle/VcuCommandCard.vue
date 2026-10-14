@@ -2,9 +2,9 @@
 import { computed, reactive, ref, watch } from "vue";
 import {
   AlertOctagonIcon,
-  AlertTriangleIcon,
   RotateCcwIcon,
   SendIcon,
+  SquareIcon,
 } from "@lucide/vue";
 import { toast } from "vue-sonner";
 
@@ -12,14 +12,6 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import {
   InputGroup,
   InputGroupAddon,
@@ -81,9 +73,6 @@ const form = reactive({
 // 目标值编辑状态：编辑期间不让实时推送覆盖尚未下发的模式和目标值。
 const isTargetEditing = ref(false);
 
-// 解除急停互锁的二次确认弹窗
-const isResetDialogOpen = ref(false);
-
 watch(isManualLocked, (locked) => {
   if (locked) activeTab.value = "cycle";
 });
@@ -121,7 +110,7 @@ const targetConfig = computed(() =>
         min: TORQUE_MIN,
         max: TORQUE_MAX,
         step: 0.1,
-        placeholder: "0.0",
+        placeholder: "输入目标扭矩",
         actionLabel: "下发扭矩",
       }
     : {
@@ -130,25 +119,57 @@ const targetConfig = computed(() =>
         min: SPEED_MIN,
         max: SPEED_MAX,
         step: 1,
-        placeholder: "0",
+        placeholder: "输入目标速度",
         actionLabel: "下发速度",
       },
 );
 
-const isTargetInvalid = computed(() => {
-  const target = form.target_value;
-  return (
-    !Number.isFinite(target) ||
-    target < targetConfig.value.min ||
-    target > targetConfig.value.max ||
-    (!isTorqueMode.value && !Number.isInteger(target))
-  );
+/** 输入框被清空（v-model.number 此时给出空字符串）：属于“还没输完”，不算错误 */
+const isTargetEmpty = computed(() => String(form.target_value ?? "").trim() === "");
+
+/** 已输入但不合法时的提示；空值或合法时为空字符串 */
+const targetErrorMessage = computed(() => {
+  if (isTargetEmpty.value) return "";
+  const target = Number(form.target_value);
+  const { label, min, max, unit } = targetConfig.value;
+  if (!Number.isFinite(target) || target < min || target > max) {
+    return `请输入 ${min} ~ ${max} ${unit} 之间的值`;
+  }
+  if (!isTorqueMode.value && !Number.isInteger(target)) {
+    return `${label}须为整数`;
+  }
+  return "";
 });
+
+/** 空值或不合法都不能下发；只有后者才显示红色错误 */
+const isTargetInvalid = computed(
+  () => isTargetEmpty.value || targetErrorMessage.value !== "",
+);
 
 function syncTargetFromCommand(command: VcuCommandState) {
   form.work_mode_req = command.work_mode_req === 1 ? 1 : 3;
   form.target_value =
     form.work_mode_req === 1 ? command.torque_req : command.speed_req;
+}
+
+/**
+ * 目标值输入框的编辑保护。
+ *
+ * SSE 每 50 ms 推送一次，未编辑时会把后端当前目标写回输入框。若只在获得焦点时标记
+ * 编辑，回车下发等操作把标记清掉后光标仍留在框内，此时按删除键会被立即写回原值。
+ * 因此每次实际输入都重新标记编辑；离开输入框时，若值与后端一致才恢复同步，
+ * 改了但未下发的值保持不动。
+ */
+function markTargetEditing() {
+  isTargetEditing.value = true;
+}
+
+function handleTargetBlur() {
+  const command = axleStore.telemetry.command;
+  const applied = isTorqueMode.value ? command.torque_req : command.speed_req;
+  if (form.target_value === applied) {
+    isTargetEditing.value = false;
+  }
 }
 
 // 控制状态始终跟随后端；仅在未编辑目标时同步模式和目标值。
@@ -305,6 +326,35 @@ watch(isEmergencyLocked, (locked) => {
   }
 });
 
+/** 平稳停机流程进行中（后端等待电机减速后自动关闭使能） */
+const isSoftStopping = computed(() => axleStore.telemetry.soft_stopping);
+
+/** 平稳停机：目标归零让控制器主动减速，停稳后自动关闭使能并切 N 挡 */
+async function handleSoftStop() {
+  if (!axleStore.isConnected || axleStore.loading || isCommandBlocked.value) {
+    return;
+  }
+  isTargetEditing.value = false;
+  try {
+    await axleStore.startSoftStop();
+    syncTargetFromCommand(axleStore.telemetry.command);
+    toast.info(
+      axleStore.telemetry.soft_stopping
+        ? "正在减速停机，转速降到 0 后自动关闭使能"
+        : "已停机，挡位已切到 N",
+    );
+  } catch (error) {
+    notifyCommandError("停机", error);
+  }
+}
+
+// 停机流程结束（后端已关闭使能）时提示一次；被新指令接管时使能仍为开启，不提示。
+watch(isSoftStopping, (stopping, wasStopping) => {
+  if (wasStopping && !stopping && axleStore.telemetry.command.mcu_en_cmd === 0) {
+    toast.success("已停机，使能已关闭");
+  }
+});
+
 /**
  * 解除急停互锁：仅撤销后端封锁，不会重新使能或恢复停机前的控制量。
  * 复位成功后目标值与挡位仍需操作员重新下发。
@@ -312,7 +362,6 @@ watch(isEmergencyLocked, (locked) => {
 async function handleEmergencyReset() {
   try {
     await axleStore.resetEmergencyStop();
-    isResetDialogOpen.value = false;
     syncTargetFromCommand(axleStore.telemetry.command);
     toast.success("急停互锁已解除", {
       description: "请重新选择工作模式与目标值后下发。",
@@ -367,53 +416,15 @@ async function handleEmergencyReset() {
               size="sm"
               variant="outline"
               :disabled="axleStore.loading"
-              @click="isResetDialogOpen = true"
+              @click="handleEmergencyReset"
             >
-              <RotateCcwIcon data-icon="inline-start" />
+              <Spinner v-if="axleStore.loading" data-icon="inline-start" />
+              <RotateCcwIcon v-else data-icon="inline-start" />
               <span>解除急停互锁</span>
             </Button>
           </AlertDescription>
         </Alert>
       </CardHeader>
-
-      <!-- 解除互锁必须二次确认；复位本身不会重新使能，也不会恢复停机前的控制量 -->
-      <Dialog v-model:open="isResetDialogOpen">
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>解除急停互锁</DialogTitle>
-            <DialogDescription>
-              复位只撤销封锁，不会自动重新使能或恢复停机前的目标值。
-            </DialogDescription>
-          </DialogHeader>
-
-          <Alert>
-            <AlertTriangleIcon />
-            <AlertTitle>复位前请确认</AlertTitle>
-            <AlertDescription>
-              电机已停稳、人员已撤离危险区域，且触发停机的原因（转速 / 转矩 / 温度越限或 MCU 反馈中断）已经消除。若越限条件仍然存在，复位后会立即再次触发自动停机；重新使能后若仍收不到 MCU 反馈，也会再次停机。
-            </AlertDescription>
-          </Alert>
-
-          <DialogFooter>
-            <Button
-              variant="outline"
-              :disabled="axleStore.loading"
-              @click="isResetDialogOpen = false"
-            >
-              取消
-            </Button>
-            <Button
-              variant="destructive"
-              :disabled="axleStore.loading"
-              @click="handleEmergencyReset"
-            >
-              <Spinner v-if="axleStore.loading" data-icon="inline-start" />
-              <RotateCcwIcon v-else data-icon="inline-start" />
-              <span>确认复位</span>
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       <TabsContent
         value="manual"
@@ -496,7 +507,7 @@ async function handleEmergencyReset() {
 
         <!-- 根据工作模式展示目标值输入与下发 -->
         <Field
-          :data-invalid="isTargetInvalid || undefined"
+          :data-invalid="Boolean(targetErrorMessage) || undefined"
           :data-disabled="!axleStore.isConnected || isCommandBlocked || undefined"
         >
           <div class="flex items-center justify-between">
@@ -519,9 +530,11 @@ async function handleEmergencyReset() {
               :max="targetConfig.max"
               :placeholder="targetConfig.placeholder"
               class="font-mono [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-              :aria-invalid="isTargetInvalid || undefined"
+              :aria-invalid="Boolean(targetErrorMessage) || undefined"
               :disabled="!axleStore.isConnected || isCommandBlocked"
-              @focus="isTargetEditing = true"
+              @focus="markTargetEditing"
+              @input="markTargetEditing"
+              @blur="handleTargetBlur"
               @keydown.enter.prevent="handleApplyTarget"
               @wheel.prevent
             />
@@ -530,27 +543,34 @@ async function handleEmergencyReset() {
             </InputGroupAddon>
           </InputGroup>
 
-          <FieldError v-if="isTargetInvalid">
-            {{ targetConfig.label }}超出有效量程！请输入
-            {{ targetConfig.min }} 至 {{ targetConfig.max }}
-            {{ targetConfig.unit }}
-            之间的{{ isTorqueMode ? "数值" : "整数" }}。
-          </FieldError>
+          <FieldError v-if="targetErrorMessage">{{ targetErrorMessage }}</FieldError>
         </Field>
 
-        <!-- 独立一行的下发按钮 -->
-        <Button
-          size="default"
-          variant="default"
-          class="h-10 w-full"
-          :disabled="
-            isTargetInvalid || axleStore.loading || !axleStore.isConnected || isCommandBlocked
-          "
-          @click="handleApplyTarget"
-        >
-          <SendIcon data-icon="inline-start" />
-          <span>{{ targetConfig.actionLabel }}</span>
-        </Button>
+        <!-- 下发与平稳停机：停机会让控制器减速到 0，停稳后自动关闭使能，不触发急停互锁 -->
+        <div class="grid grid-cols-2 gap-3">
+          <Button
+            class="h-10"
+            :disabled="
+              isTargetInvalid || axleStore.loading || !axleStore.isConnected || isCommandBlocked
+            "
+            @click="handleApplyTarget"
+          >
+            <SendIcon data-icon="inline-start" />
+            <span>{{ targetConfig.actionLabel }}</span>
+          </Button>
+          <Button
+            variant="outline"
+            class="h-10"
+            :disabled="
+              isSoftStopping || axleStore.loading || !axleStore.isConnected || isCommandBlocked
+            "
+            @click="handleSoftStop"
+          >
+            <Spinner v-if="isSoftStopping" data-icon="inline-start" />
+            <SquareIcon v-else data-icon="inline-start" />
+            <span>{{ isSoftStopping ? "减速停机中…" : "停机" }}</span>
+          </Button>
+        </div>
       </FieldGroup>
         </CardContent>
       </TabsContent>

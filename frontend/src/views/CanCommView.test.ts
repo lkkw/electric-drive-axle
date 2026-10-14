@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { CanFrameItem } from '@/types/axle'
-import { processFrames } from './canCommUtils'
+import { listFrameGroups, mergeFrameGroups, processFrames, type ProcessedFrame } from './canCommUtils'
 
 describe('CanCommView - processFrames & ID 聚合逻辑测试', () => {
   const mockFrames: CanFrameItem[] = [
@@ -171,5 +171,63 @@ describe('CanCommView - processFrames & ID 聚合逻辑测试', () => {
 
     expect(traceResult).toHaveLength(4)
     expect(traceResult.map((f) => f.sequence)).toEqual([1, 2, 3, 4])
+  })
+
+  describe('ID 聚合需跨推送累积（低频报文不能闪烁）', () => {
+    function frame(sequence: number, canId: number, direction: 'TX' | 'RX' = 'RX'): CanFrameItem {
+      const hex = `0x${canId.toString(16).toUpperCase().padStart(3, '0')}`
+      return {
+        sequence,
+        timestamp: `t${sequence}`,
+        direction,
+        can_id: canId,
+        can_id_hex: hex,
+        dlc: 8,
+        data_hex: '00',
+        name: hex,
+      }
+    }
+
+    /** 后端每次推送最近 200 帧：模拟 0x258/0x35B 各 10 ms 一帧的高频总线 */
+    function busWindow(fromSeq: number, count: number): CanFrameItem[] {
+      return Array.from({ length: count }, (_, i) =>
+        frame(fromSeq + i, i % 2 === 0 ? 0x258 : 0x35b, i % 2 === 0 ? 'TX' : 'RX'),
+      )
+    }
+
+    it('1 秒周期的 0x5EF 被挤出最近 200 帧窗口后仍保留在聚合列表中', () => {
+      const groups = new Map<string, ProcessedFrame>()
+      let last = 0
+
+      // 第一次推送：窗口内包含一帧 0x5EF
+      const first = [...busWindow(1, 150), frame(151, 0x5ef), ...busWindow(152, 49)]
+      last = mergeFrameGroups(groups, first, last)
+      expect(listFrameGroups(groups, 'ALL', '').some((g) => g.can_id === 0x5ef)).toBe(true)
+
+      // 0.9 秒后：新窗口全是高频报文，0x5EF 已不在最近 200 帧内
+      last = mergeFrameGroups(groups, busWindow(201, 200), last)
+      const ef = listFrameGroups(groups, 'ALL', '').find((g) => g.can_id === 0x5ef)
+      expect(ef).toBeDefined()
+      expect(ef?.count).toBe(1)
+      expect(ef?.timestamp).toBe('t151') // 显示最近一次收到的时间
+    })
+
+    it('重复推送的重叠帧不重复计数，计数为监视期间累计值', () => {
+      const groups = new Map<string, ProcessedFrame>()
+      let last = mergeFrameGroups(groups, busWindow(1, 200), 0)
+      // 后端窗口滑动：第 101~300 帧，其中 101~200 已处理过
+      last = mergeFrameGroups(groups, busWindow(101, 200), last)
+      const total = listFrameGroups(groups, 'ALL', '').reduce((sum, g) => sum + (g.count ?? 0), 0)
+      expect(total).toBe(300)
+      expect(last).toBe(300)
+    })
+
+    it('后端重启导致序号回退时重新开始统计', () => {
+      const groups = new Map<string, ProcessedFrame>()
+      let last = mergeFrameGroups(groups, busWindow(1000, 10), 0)
+      last = mergeFrameGroups(groups, [frame(1, 0x35a)], last)
+      expect(last).toBe(1)
+      expect(listFrameGroups(groups, 'ALL', '').map((g) => g.can_id)).toEqual([0x35a])
+    })
   })
 })

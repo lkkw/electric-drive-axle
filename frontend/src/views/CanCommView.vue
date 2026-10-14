@@ -8,7 +8,6 @@ import {
   PauseIcon,
   PlayIcon,
   Trash2Icon,
-  UnplugIcon,
 } from '@lucide/vue'
 
 import { cn } from '@/lib/utils'
@@ -49,7 +48,12 @@ import {
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { useAxleStore } from '@/stores/useAxleStore'
 import type { CanConnectRequest, CanFrameItem } from '@/types/axle'
-import { processFrames, type ProcessedFrame } from './canCommUtils'
+import {
+  listFrameGroups,
+  mergeFrameGroups,
+  processFrames,
+  type ProcessedFrame,
+} from './canCommUtils'
 
 const axleStore = useAxleStore()
 
@@ -130,11 +134,32 @@ watch(viewMode, (newMode) => {
   }
 })
 
-// 监听 store 变化，先过滤再按需分组
+// ID 聚合表：在页面生命周期内持续累积。后端每次只推送最近 200 帧（约 0.9 s），
+// 若每次重新聚合，1 s 周期的低频报文（如 0x5EF）会反复消失又出现。
+// 暂停时不再合并新帧，画面保持冻结。
+const frameGroups = new Map<string, ProcessedFrame>()
+let lastGroupedSequence = 0
+const frameGroupsVersion = ref(0)
+
+watch(
+  () => axleStore.telemetry.recent_frames,
+  (frames) => {
+    if (isPaused.value) return
+    lastGroupedSequence = mergeFrameGroups(frameGroups, frames, lastGroupedSequence)
+    frameGroupsVersion.value += 1
+  },
+  { immediate: true },
+)
+
 const processedFrames = computed<ProcessedFrame[]>(() => {
+  if (viewMode.value === 'GROUP') {
+    // 读取版本号以建立响应式依赖（Map 本身不是响应式对象）
+    void frameGroupsVersion.value
+    return listFrameGroups(frameGroups, directionFilter.value, searchFilter.value)
+  }
   return processFrames({
     frames: isPaused.value ? displayedFrames.value : axleStore.telemetry.recent_frames,
-    viewMode: viewMode.value,
+    viewMode: 'TRACE',
     directionFilter: directionFilter.value,
     searchFilter: searchFilter.value,
     maxFrames: MAX_RENDERED_FRAMES,
@@ -153,6 +178,8 @@ function togglePause() {
 
 async function handleClearFrames() {
   displayedFrames.value = []
+  frameGroups.clear()
+  frameGroupsVersion.value += 1
   await axleStore.clearFrames()
 }
 
@@ -208,19 +235,6 @@ onBeforeUnmount(() => {
       <AlertTitle>CAN 驱动加载失败，无法连接设备</AlertTitle>
       <AlertDescription>
         {{ axleStore.telemetry.driver_error }} 修复后请重启程序。
-      </AlertDescription>
-    </Alert>
-
-    <!-- 硬件链路失效：后端已自动停机并释放设备，需重新连接 -->
-    <Alert
-      v-if="axleStore.linkError && !axleStore.isConnected"
-      variant="destructive"
-      class="shrink-0"
-    >
-      <UnplugIcon />
-      <AlertTitle>CAN 硬件链路中断，通信已自动停止</AlertTitle>
-      <AlertDescription>
-        {{ axleStore.linkError }} 请检查 USBCAN 连接与供电后重新连接。
       </AlertDescription>
     </Alert>
 

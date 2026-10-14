@@ -1,7 +1,7 @@
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { emergencyReset, emergencyStop, getAxleStatus } from '@/api/axle'
+import { emergencyReset, emergencyStop, getAxleStatus, softStop } from '@/api/axle'
 import type { AxleTelemetry } from '@/types/axle'
 import {
   HISTORY_SAMPLE_INTERVAL_MS,
@@ -16,6 +16,7 @@ vi.mock('@/api/axle', async (importOriginal) => {
     emergencyReset: vi.fn(),
     emergencyStop: vi.fn(),
     getAxleStatus: vi.fn(),
+    softStop: vi.fn(),
   }
 })
 
@@ -139,5 +140,31 @@ describe('useAxleStore', () => {
     expect(store.isEmergencyLocked).toBe(true)
     expect(store.error).toBe('解除急停互锁失败')
     expect(store.loading).toBe(false)
+  })
+
+  it('平稳停机：已使能时进入减速停机状态，目标值归零', async () => {
+    const store = useAxleStore()
+    store.telemetry.command = { ...store.telemetry.command, mcu_en_cmd: 1, speed_req: 1000 }
+
+    vi.mocked(softStop).mockReturnValue({
+      send: () => Promise.resolve({ ...store.telemetry.command, speed_req: 0, torque_req: 0 }),
+    } as unknown as ReturnType<typeof softStop>)
+
+    await store.startSoftStop()
+
+    expect(store.telemetry.command.speed_req).toBe(0)
+    expect(store.telemetry.soft_stopping).toBe(true)
+    expect(store.loading).toBe(false)
+  })
+
+  it('平稳停机失败时记录错误且不进入停机状态', async () => {
+    const store = useAxleStore()
+    vi.mocked(softStop).mockReturnValue({
+      send: () => Promise.reject(new Error('CAN 未连接，无法执行停机。')),
+    } as unknown as ReturnType<typeof softStop>)
+
+    await expect(store.startSoftStop()).rejects.toThrow('CAN 未连接')
+    expect(store.telemetry.soft_stopping).toBe(false)
+    expect(store.error).toBe('CAN 未连接，无法执行停机。')
   })
 })

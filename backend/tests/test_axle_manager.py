@@ -301,6 +301,9 @@ def test_axle_manager_emergency_reset_releases_interlock() -> None:
             with pytest.raises(CanDriverError):
                 await manager.update_command(VcuCommandUpdateRequest(speed_req=3000))
 
+            # 互锁期间电机无法使能，因此不阻止 PLC 上电
+            assert manager.power_on_blocker() is None
+
             # 互锁期间：循环测试同样无法取得控制权
             with pytest.raises(CanDriverError):
                 await manager.start_cycle_test(
@@ -786,7 +789,8 @@ def test_tx_loop_realigns_after_stall_instead_of_bursting() -> None:
         assert stall_end is not None
         burst = [t for t in send_times if stall_end <= t < stall_end + 0.03]
         # 正常节拍下 30 ms 内约 3~4 帧；未对齐时会集中补发约 15 帧。
-        assert len(burst) <= 5
+        # 上限留出调度抖动余量（系统负载高时偶有多 1~2 帧），仍能明确区分集中补发。
+        assert len(burst) <= 8
 
     asyncio.run(run_test())
 

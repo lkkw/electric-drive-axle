@@ -34,6 +34,21 @@ class Settings:
         return self.data_dir / "safety_config.json"
 
     @property
+    def plc_config_path(self) -> Path:
+        """PLC 连接参数（IP、机架、槽号、仿真）持久化文件路径。"""
+        return self.data_dir / "plc_config.json"
+
+    @property
+    def test_records_db_path(self) -> Path:
+        """试车记录数据库（SQLite）路径。"""
+        return self.data_dir / "test_records.db"
+
+    @property
+    def export_dir(self) -> Path:
+        """试车记录 CSV 导出目录。"""
+        return self.data_dir / "exports"
+
+    @property
     def log_dir(self) -> Path:
         """运行日志与安全事件日志目录。"""
         return self.data_dir / "logs"

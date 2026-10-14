@@ -11,8 +11,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import get_settings
 from app.core.logging_setup import configure_logging
-from app.routers import axle
+from app.routers import axle, plc, test_records
 from app.services.axle_manager import get_axle_manager
+from app.services.plc_manager import get_plc_manager
 
 
 def _resolve_default_frontend_dir() -> Path:
@@ -44,11 +45,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     configure_logging(settings.log_dir)
     logging.getLogger("app").info("%s v%s 启动", settings.app_name, settings.app_version)
+    # 启动时就创建 PLC 管理器，确保急停联动（复位上电请求）始终已注册
+    plc_manager = get_plc_manager()
     yield
 
-    # 关闭阶段：安全清理电驱桥 CAN 硬件连接与底层驱动线程池
+    # 关闭阶段：先让电驱桥发停机帧并释放 USBCAN，再复位 PLC 上电请求切断高压
     manager = get_axle_manager()
     await manager.shutdown()
+    await plc_manager.shutdown()
 
 
 def create_app(
@@ -81,6 +85,8 @@ def create_app(
 
     api_router = APIRouter(prefix=settings.api_prefix)
     api_router.include_router(axle.router)
+    api_router.include_router(plc.router)
+    api_router.include_router(test_records.router)
     application.include_router(api_router)
 
     @application.get("/health", tags=["Health"], summary="健康检查")

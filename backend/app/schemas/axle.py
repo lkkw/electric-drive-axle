@@ -206,8 +206,10 @@ class AxleSafetyConfig(BaseModel):
     )
 
 
-SafetyMetric = Literal["motor_speed", "motor_torque", "motor_temperature", "feedback_timeout"]
-SafetyUnit = Literal["RPM", "Nm", "℃", "ms"]
+SafetyMetric = Literal[
+    "motor_speed", "motor_torque", "motor_temperature", "feedback_timeout", "plc_safe"
+]
+SafetyUnit = Literal["RPM", "Nm", "℃", "ms", ""]
 
 
 class AxleSafetyTrip(BaseModel):
@@ -278,6 +280,8 @@ class AxleTelemetry(BaseModel):
     # 仅在成功解码 0x35C 后更新，自动温度保护不使用陈旧温度值。
     mcu_tbox_last_rx_timestamp: float | None = None
     safety: AxleSafetyStatus = Field(default_factory=AxleSafetyStatus)
+    # 平稳停机流程正在等待电机减速（完成后自动关闭使能）。
+    soft_stopping: bool = False
     # 硬件链路连续异常导致自动断开时的原因；重新连接成功后清空。
     link_error: str | None = None
     # 周立功动态库加载失败的原因；为 None 表示驱动可用。

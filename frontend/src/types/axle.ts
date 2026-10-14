@@ -106,13 +106,14 @@ export type SafetyMetric =
   | 'motor_torque'
   | 'motor_temperature'
   | 'feedback_timeout'
+  | 'plc_safe'
 
 export interface AxleSafetyTrip {
   trip_id: number
   metric: SafetyMetric
   actual_value: number
   threshold: number
-  unit: 'RPM' | 'Nm' | '℃' | 'ms'
+  unit: 'RPM' | 'Nm' | '℃' | 'ms' | ''
   message: string
   triggered_at: string
 }
@@ -157,6 +158,8 @@ export interface AxleTelemetry {
   mcu_tbox: McuTboxTelemetry
   mcu_tbox_last_rx_timestamp: number | null
   safety: AxleSafetyStatus
+  /** 平稳停机正在等待电机减速（完成后后端自动关闭使能） */
+  soft_stopping: boolean
   /** 硬件链路连续异常导致自动断开时的原因；重新连接成功后为 null */
   link_error: string | null
   /** 周立功动态库加载失败的原因；null 表示驱动可用 */

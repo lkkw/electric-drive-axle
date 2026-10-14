@@ -1,13 +1,12 @@
 <script setup lang="ts">
-import { UnplugIcon } from '@lucide/vue'
 import { RouterLink } from 'vue-router'
 
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { SITE_HEADER_ACTIONS } from '@/components/layout/headerActions'
 import AxleTelemetryChart from '@/components/axle/AxleTelemetryChart.vue'
 import McuTelemetryCard from '@/components/axle/McuTelemetryCard.vue'
+import TestJudgeCard from '@/components/axle/TestJudgeCard.vue'
 import VcuCommandCard from '@/components/axle/VcuCommandCard.vue'
 import { useAxleStore } from '@/stores/useAxleStore'
 
@@ -34,15 +33,6 @@ const axleStore = useAxleStore()
       </Button>
     </Teleport>
 
-    <!-- 硬件链路失效：后端已自动停机并释放设备 -->
-    <Alert v-if="axleStore.linkError && !axleStore.isConnected" variant="destructive">
-      <UnplugIcon />
-      <AlertTitle>CAN 硬件链路中断，通信已自动停止</AlertTitle>
-      <AlertDescription>
-        {{ axleStore.linkError }} 请检查 USBCAN 连接与供电后，前往 CAN 通信页重新连接。
-      </AlertDescription>
-    </Alert>
-
     <!-- 中部双列布局：左侧 VCU 控制台，右侧 MCU 状态与诊断反馈 (等高对齐) -->
     <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
       <!-- 左侧：上位机 VCU 控制台 (占 6 列) -->
@@ -55,6 +45,9 @@ const axleStore = useAxleStore()
         <McuTelemetryCard />
       </div>
     </div>
+
+    <!-- 试车判定：合格 / NG 写入 PLC 并保存试车记录 -->
+    <TestJudgeCard />
 
     <!-- 底部通栏：动力响应实时动态波形曲线 -->
     <div class="w-full">

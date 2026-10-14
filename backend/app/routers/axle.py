@@ -276,6 +276,24 @@ async def emergency_stop(
 
 
 @router.post(
+    "/soft-stop",
+    response_model=VcuCommandState,
+    summary="平稳停机（减速到停后自动关闭使能）",
+)
+async def soft_stop(
+    manager: AxleManagerDep,
+) -> VcuCommandState:
+    """目标转速/转矩归零让控制器主动减速；实际转速降到阈值内后自动关闭使能并切 N 挡。
+
+    不进入急停互锁。期间下发新指令、急停或断开会终止该流程。
+    """
+    try:
+        return await manager.soft_stop()
+    except CanDriverError as err:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(err)) from err
+
+
+@router.post(
     "/emergency-reset",
     response_model=VcuCommandState,
     summary="复位急停互锁",

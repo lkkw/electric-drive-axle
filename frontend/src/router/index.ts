@@ -20,10 +20,22 @@ const router = createRouter({
           meta: { title: 'CAN 通讯控制' },
         },
         {
+          path: 'power',
+          name: 'bench-power',
+          component: () => import('@/views/PowerView.vue'),
+          meta: { title: '台架供电' },
+        },
+        {
           path: 'axle',
           name: 'axle-control',
           component: () => import('@/views/AxleControlView.vue'),
           meta: { title: '电驱桥控制台' },
+        },
+        {
+          path: 'records',
+          name: 'test-records',
+          component: () => import('@/views/TestRecordsView.vue'),
+          meta: { title: '试车记录' },
         },
         {
           path: 'safety',

@@ -212,12 +212,6 @@ const statusGroups = computed<StatusGroup[]>(() => {
     },
   ];
 });
-
-const heartbeats = computed(() => [
-  { id: "0x35A", life: mcu1.value.mcu_life_1, fresh: hasFreshMcu1.value },
-  { id: "0x35B", life: mcu2.value.mcu_life_2, fresh: hasFreshMcu2.value },
-  { id: "0x35C", life: tbox.value.mcu_tbox_life, fresh: hasFreshTbox.value },
-]);
 </script>
 
 <template>
@@ -299,19 +293,6 @@ const heartbeats = computed(() => [
             </div>
           </dl>
         </section>
-      </div>
-
-      <!-- 通信心跳：Life 计数应持续翻转，灰色表示该报文未在周期内到达 -->
-      <div class="flex flex-wrap items-center gap-2 text-sm">
-        <span class="text-muted-foreground">通信心跳</span>
-        <Badge
-          v-for="beat in heartbeats"
-          :key="beat.id"
-          :variant="beat.fresh ? 'outline' : 'secondary'"
-          class="font-mono"
-        >
-          {{ beat.id }} · {{ beat.fresh ? `Life ${beat.life}` : '无数据' }}
-        </Badge>
       </div>
     </CardContent>
   </Card>
