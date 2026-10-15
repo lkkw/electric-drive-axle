@@ -131,6 +131,13 @@ class CycleTestStatus(BaseModel):
     step_remaining_seconds: int = 0
     total_elapsed_seconds: int = 0
     last_error: str | None = None
+    # 循环跑完或异常中断后的自动判定与下电：none=不判定（未结束或操作员主动终止），
+    # pending=正在等待电机停转 / 判定 / 下电，done=已完成
+    auto_judge: Literal["none", "pending", "done"] = "none"
+    auto_judge_result: Literal[1, 2] | None = Field(
+        default=None, description="自动判定结论 1=合格 2=NG；判定失败时为空"
+    )
+    auto_judge_message: str | None = None
 
 
 class McuDriveMotor1Telemetry(BaseModel):
@@ -284,6 +291,8 @@ class AxleTelemetry(BaseModel):
     soft_stopping: bool = False
     # 硬件链路连续异常导致自动断开时的原因；重新连接成功后清空。
     link_error: str | None = None
+    # 空闲时总线无应答（多为控制器未上电）：只提示、不断开，通信恢复后清除
+    bus_warning: str | None = None
     # 周立功动态库加载失败的原因；为 None 表示驱动可用。
     driver_error: str | None = None
     tx_frame_count: int = 0

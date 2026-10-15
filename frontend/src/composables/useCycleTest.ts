@@ -30,6 +30,8 @@ export function useCycleTest() {
   const isRunning = computed(() => status.value === 'running')
   const isPaused = computed(() => status.value === 'paused')
   const isIdle = computed(() => !isRunning.value && !isPaused.value)
+  /** 循环结束后后端正在等待电机停转、自动判定并下电 */
+  const isAutoJudging = computed(() => axleStore.telemetry.cycle_test.auto_judge === 'pending')
   const currentLoop = computed(() => axleStore.telemetry.cycle_test.current_loop)
   const currentStepIndex = computed(() => axleStore.telemetry.cycle_test.current_step_index)
   const stepRemainingSeconds = computed(() => axleStore.telemetry.cycle_test.step_remaining_seconds)
@@ -171,6 +173,10 @@ export function useCycleTest() {
       toast.error('系统处于急停互锁状态，请先在控制台解除急停互锁')
       return
     }
+    if (isAutoJudging.value) {
+      toast.warning('上一轮循环测试正在自动判定 / 下电，请稍候')
+      return
+    }
     const request = buildRequest()
     if (!request) return
     try {
@@ -223,6 +229,7 @@ export function useCycleTest() {
     isRunning,
     isPaused,
     isIdle,
+    isAutoJudging,
     steps,
     totalLoops,
     currentLoop,

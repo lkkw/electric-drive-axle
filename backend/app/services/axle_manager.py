@@ -13,10 +13,10 @@ import logging
 import math
 import time
 from collections import deque
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from app.core.can.codec import (
     decode_mcu_motor_1,
@@ -82,6 +82,12 @@ BROADCAST_INTERVAL_SECONDS = 0.050
 # 同一收发源连续驱动异常达到任一条件即判定硬件链路失效并自动停止通信。
 LINK_FAILURE_ERROR_COUNT = 10
 LINK_FAILURE_SECONDS = 1.0
+# 空闲时（未使能、无循环测试）驱动异常只提示不断开：控制器未上电时总线上无节点应答，
+# USBCAN 反复重发会让发送调用超时，这不是 USBCAN 掉线。
+BUS_NO_RESPONSE_WARNING = (
+    "CAN 总线无应答：请确认控制器已上电、CAN 线束已连接；若控制器已上电仍持续出现，"
+    "请检查 USBCAN 连接。控制器恢复通信后自动消除。"
+)
 # 同类高频告警日志的最小输出间隔，避免 10ms 循环刷屏。
 LOG_THROTTLE_SECONDS = 1.0
 
@@ -101,6 +107,8 @@ SAFETY_METRIC_LABELS: dict[SafetyMetric, str] = {
 
 # 急停 / 链路故障时的外部联动（如 PLC 复位上电请求切断高压），参数为原因
 EmergencyListener = Callable[[str], Awaitable[None]]
+# 循环测试跑完或异常中断后的联动（自动判定、自动下电），参数为结束时的循环状态
+CycleFinishedListener = Callable[[CycleTestStatus], Awaitable[None]]
 
 
 class _FrameRecord(NamedTuple):
@@ -195,9 +203,11 @@ class AxleManager:
         # 硬件链路健康：按收发源统计连续异常 (次数, 首次异常单调时间)。
         self._driver_error_streaks: dict[str, tuple[int, float]] = {}
         self._link_error: str | None = None
+        self._bus_warning: str | None = None
         self._link_failure_task: asyncio.Task[None] | None = None
         self._soft_stop_task: asyncio.Task[None] | None = None
         self._emergency_listeners: list[EmergencyListener] = []
+        self._cycle_finished_listeners: list[CycleFinishedListener] = []
         self._listener_tasks: set[asyncio.Task[None]] = set()
         self._log_throttle: dict[str, tuple[float, int]] = {}
 
@@ -298,6 +308,7 @@ class AxleManager:
             self._connected = True
             self._is_transmitting = True
             self._link_error = None
+            self._bus_warning = None
 
             # 2. 启动 10ms 发送循环与高频接收循环
             self._tx_task = asyncio.create_task(
@@ -370,6 +381,7 @@ class AxleManager:
             self._is_transmitting = False
             self._connected = False
             self._disconnecting = False
+            self._bus_warning = None
             self._shutdown_frames_remaining = 0
             self._mcu_1_last_rx_timestamp = None
             self._mcu_2_last_rx_timestamp = None
@@ -483,13 +495,34 @@ class AxleManager:
         """一次成功的驱动调用即结束该收发源的连续异常计数。"""
         if source in self._driver_error_streaks:
             del self._driver_error_streaks[source]
+        if self._bus_warning is not None and not self._driver_error_streaks:
+            self._bus_warning = None
+            events.info("CAN 总线通信已恢复")
+
+    def _control_active(self) -> bool:
+        """电机已使能或循环测试未结束：此时失去 CAN 控制必须自动停止通信并切断高压。"""
+        return self._command.mcu_en_cmd == 1 or self._cycle_status.status in {
+            "running",
+            "paused",
+        }
 
     def _note_driver_error(self, source: str, description: str, err: Exception) -> None:
-        """记录驱动异常；连续异常达到阈值时安排自动停止通信。"""
+        """记录驱动异常；测试进行中连续异常达到阈值时安排自动停止通信。
+
+        空闲时只提示总线无应答、保持连接。异常持续期间一旦使能或启动循环，
+        下一次异常即按已持续的时长判定为链路失效。
+        """
         now = time.monotonic()
         count, since = self._driver_error_streaks.get(source, (0, now))
         count += 1
         self._driver_error_streaks[source] = (count, since)
+
+        if not self._control_active():
+            if self._bus_warning is None:
+                self._bus_warning = BUS_NO_RESPONSE_WARNING
+                events.warning("CAN 总线无应答，电机未使能，保持连接: %s: %s", description, err)
+            return
+
         self._log_throttled(source, logging.WARNING, "%s异常: %s", description, err)
 
         if count >= LINK_FAILURE_ERROR_COUNT or now - since >= LINK_FAILURE_SECONDS:
@@ -565,8 +598,14 @@ class AxleManager:
         status: str,
         *,
         error: str | None = None,
+        abnormal: bool = False,
     ) -> None:
-        """终止循环任务并统一进入禁用、归零、N 挡状态。"""
+        """终止循环任务并统一进入禁用、归零、N 挡状态。
+
+        循环正常跑完（completed）或异常中断（error / ``abnormal``，如急停）时通知自动判定；
+        操作员主动终止、操作员下电或断开 CAN 不判定。
+        """
+        was_active = self._cycle_status.status in {"running", "paused"}
         self._cycle_generation += 1
         task = self._cycle_task
         self._cycle_task = None
@@ -577,6 +616,15 @@ class AxleManager:
         self._cycle_status.control_owner = "none"
         self._cycle_status.step_remaining_seconds = 0
         self._cycle_status.last_error = error
+        if (
+            was_active
+            and (status in {"completed", "error"} or abnormal)
+            and self._cycle_finished_listeners
+        ):
+            self._cycle_status.auto_judge = "pending"
+            snapshot = self._cycle_status.model_copy()
+            for listener in self._cycle_finished_listeners:
+                self._spawn_listener(listener(snapshot), name="axle_cycle_finished_listener")
 
     async def start_cycle_test(
         self,
@@ -592,8 +640,12 @@ class AxleManager:
                 raise CanDriverError("系统处于急停锁定状态，请先完成复位。")
             if self._cycle_status.status in {"running", "paused"}:
                 raise CanDriverError("已有循环测试正在执行。")
+            if self._cycle_status.auto_judge == "pending":
+                raise CanDriverError("上一轮循环测试正在自动判定 / 下电，请稍候。")
 
             self._cancel_soft_stop_locked()
+            # 自动判定只看本轮循环：清掉循环前手动调试期间累计的统计与故障码
+            self.test_session.reset()
             self._cycle_generation += 1
             generation = self._cycle_generation
             self._cycle_config = request.model_copy(deep=True)
@@ -787,7 +839,11 @@ class AxleManager:
         """
         async with self._lock:
             self._cancel_soft_stop_locked()
-            self._finish_cycle_locked("stopped", error="急停已触发。")
+            self._finish_cycle_locked(
+                "stopped",
+                error=f"急停已触发：{reason or '操作员手动急停'}",
+                abnormal=True,
+            )
             self._is_emergency_locked = True
 
             # 如果当前通道有效，立即同步下发紧急制动帧
@@ -831,12 +887,53 @@ class AxleManager:
         """注册急停 / 链路故障联动（例如 PLC 复位上电请求）。"""
         self._emergency_listeners.append(listener)
 
+    def add_cycle_finished_listener(self, listener: CycleFinishedListener) -> None:
+        """注册循环测试跑完 / 异常中断后的联动（自动判定、自动下电）。"""
+        self._cycle_finished_listeners.append(listener)
+
+    def _spawn_listener(self, coro: Coroutine[Any, Any, None], *, name: str) -> None:
+        """在后台执行联动，不阻塞调用方（急停接口、循环状态机）。"""
+        task = asyncio.create_task(coro, name=name)
+        self._listener_tasks.add(task)
+        task.add_done_callback(self._listener_tasks.discard)
+
     def _notify_emergency_listeners(self, reason: str) -> None:
         """在后台执行联动，不让 PLC 通讯拖慢急停接口的返回。"""
         for listener in self._emergency_listeners:
-            task = asyncio.create_task(listener(reason), name="axle_emergency_listener")
-            self._listener_tasks.add(task)
-            task.add_done_callback(self._listener_tasks.discard)
+            self._spawn_listener(listener(reason), name="axle_emergency_listener")
+
+    def judge_blocker(self) -> str | None:
+        """手动判定前的放行检查；返回拒绝原因，None 表示允许。"""
+        if self._cycle_status.status in {"running", "paused"}:
+            return "循环测试正在执行，结束后会自动判定"
+        if self._cycle_status.auto_judge == "pending":
+            return "循环测试正在自动判定 / 下电，请稍候"
+        return None
+
+    async def report_auto_judge(self, result: int | None, message: str) -> None:
+        """自动判定流程结束后回写结论，通过遥测推送给界面。"""
+        async with self._lock:
+            self._cycle_status.auto_judge = "done"
+            self._cycle_status.auto_judge_result = result  # type: ignore[assignment]
+            self._cycle_status.auto_judge_message = message
+        self._broadcast_telemetry()
+
+    async def wait_motor_stopped(self, timeout_s: float) -> bool:
+        """等待实际转速降到停稳阈值内；CAN 未连接或超时仍未停稳返回 False。"""
+        deadline = time.monotonic() + timeout_s
+        while True:
+            if not self._connected:
+                return False
+            received_at = self._mcu_2_last_rx_timestamp
+            if (
+                received_at is not None
+                and time.time() - received_at <= MCU_2_SAFETY_FRESHNESS_SECONDS
+                and abs(self._mcu_2.mcu_act_motor_spd) <= SOFT_STOP_SPEED_THRESHOLD_RPM
+            ):
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            await asyncio.sleep(SOFT_STOP_POLL_SECONDS)
 
     def power_on_blocker(self) -> str | None:
         """PLC 上电前的放行检查；返回拒绝原因，None 表示允许。
@@ -1303,6 +1400,7 @@ class AxleManager:
             ),
             soft_stopping=self.is_soft_stopping,
             link_error=self._link_error,
+            bus_warning=self._bus_warning,
             driver_error=self._driver_error,
             tx_frame_count=self._tx_frame_count,
             rx_frame_count=self._rx_frame_count,

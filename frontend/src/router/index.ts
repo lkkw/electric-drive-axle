@@ -29,7 +29,7 @@ const router = createRouter({
           path: 'axle',
           name: 'axle-control',
           component: () => import('@/views/AxleControlView.vue'),
-          meta: { title: '电驱桥控制台' },
+          meta: { title: '下线测试' },
         },
         {
           path: 'records',

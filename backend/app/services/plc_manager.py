@@ -661,6 +661,12 @@ def get_plc_manager() -> PlcPowerManager:
             mes_telemetry=axle.mes_telemetry,
         )
         axle.add_emergency_listener(manager.cut_power_for_emergency)
+        # 循环测试跑完 / 异常中断后自动判定并请求下电
+        from app.services.auto_judge import CycleAutoJudge
+        from app.services.test_records import get_test_record_store
+
+        auto_judge = CycleAutoJudge(axle=axle, plc=manager, store_factory=get_test_record_store)
+        axle.add_cycle_finished_listener(auto_judge.on_cycle_finished)
         _global_plc_manager = manager
     return _global_plc_manager
 

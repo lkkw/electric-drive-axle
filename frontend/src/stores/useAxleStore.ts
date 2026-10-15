@@ -56,6 +56,9 @@ const createInitialTelemetry = (): AxleTelemetry => ({
     step_remaining_seconds: 0,
     total_elapsed_seconds: 0,
     last_error: null,
+    auto_judge: 'none',
+    auto_judge_result: null,
+    auto_judge_message: null,
   },
   mcu_1: {
     mcu_dc_main_wire_volt: 0,
@@ -100,6 +103,7 @@ const createInitialTelemetry = (): AxleTelemetry => ({
   },
   soft_stopping: false,
   link_error: null,
+  bus_warning: null,
   driver_error: null,
   tx_frame_count: 0,
   rx_frame_count: 0,
@@ -151,6 +155,7 @@ export const useAxleStore = defineStore('axle', () => {
   const isEmergencyLocked = computed(() => telemetry.value.is_emergency_locked)
   /** 硬件链路故障导致后端自动断开的原因 */
   const linkError = computed(() => telemetry.value.link_error)
+  const busWarning = computed(() => telemetry.value.bus_warning)
 
   /** 按采样间隔记录曲线点，并丢弃超出时间窗口的旧点 */
   function recordHistory(data: AxleTelemetry, now: number = Date.now()) {
@@ -409,6 +414,7 @@ export const useAxleStore = defineStore('axle', () => {
     isTransmitting,
     isEmergencyLocked,
     linkError,
+    busWarning,
     recordHistory,
     startSse,
     stopSse,

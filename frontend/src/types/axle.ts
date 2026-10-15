@@ -59,6 +59,11 @@ export interface CycleTestStatus {
   step_remaining_seconds: number
   total_elapsed_seconds: number
   last_error: string | null
+  /** 循环跑完或异常中断后的自动判定与下电：none=不判定，pending=进行中，done=已完成 */
+  auto_judge: 'none' | 'pending' | 'done'
+  /** 自动判定结论 1=合格 2=NG；判定失败时为空 */
+  auto_judge_result: 1 | 2 | null
+  auto_judge_message: string | null
 }
 
 export interface McuDriveMotor1Telemetry {
@@ -162,6 +167,8 @@ export interface AxleTelemetry {
   soft_stopping: boolean
   /** 硬件链路连续异常导致自动断开时的原因；重新连接成功后为 null */
   link_error: string | null
+  /** 空闲时总线无应答（多为控制器未上电）：只提示、不断开，通信恢复后为 null */
+  bus_warning: string | null
   /** 周立功动态库加载失败的原因；null 表示驱动可用 */
   driver_error: string | null
   tx_frame_count: number

@@ -1,6 +1,9 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, watch } from 'vue'
+import { toast } from 'vue-sonner'
 import {
+  CircleCheckIcon,
+  CircleXIcon,
   ClockIcon,
   PauseIcon,
   PlayIcon,
@@ -104,6 +107,21 @@ const statusText = computed(() => {
 function handleResetToDefault() {
   cycle.resetToDefault()
 }
+
+const cycleTest = computed(() => axleStore.telemetry.cycle_test)
+
+// 自动判定完成时弹出结论（结论与下电结果同时保留在面板上）
+watch(
+  () => cycleTest.value.auto_judge,
+  (now, previous) => {
+    if (previous !== 'pending' || now !== 'done') return
+    const { auto_judge_result: result, auto_judge_message: message } = cycleTest.value
+    const description = message ?? undefined
+    if (result === 1) toast.success('自动判定：合格', { description })
+    else if (result === 2) toast.error('自动判定：NG', { description })
+    else toast.warning('自动判定未完成', { description })
+  },
+)
 </script>
 
 <template>
@@ -202,6 +220,24 @@ function handleResetToDefault() {
     >
       <AlertTitle>循环测试已停止</AlertTitle>
       <AlertDescription>{{ axleStore.telemetry.cycle_test.last_error }}</AlertDescription>
+    </Alert>
+
+    <!-- 循环跑完 / 异常中断后的自动判定与下电 -->
+    <Alert v-if="cycleTest.auto_judge === 'pending'">
+      <Spinner />
+      <AlertTitle>正在自动判定并下电</AlertTitle>
+      <AlertDescription>等待电机停转后写入判定结果，随后自动请求下电。</AlertDescription>
+    </Alert>
+    <Alert
+      v-else-if="cycleTest.auto_judge === 'done'"
+      :variant="cycleTest.auto_judge_result === 1 ? 'default' : 'destructive'"
+    >
+      <CircleCheckIcon v-if="cycleTest.auto_judge_result === 1" class="text-success" />
+      <CircleXIcon v-else />
+      <AlertTitle>
+        自动判定：{{ cycleTest.auto_judge_result === 1 ? '合格' : cycleTest.auto_judge_result === 2 ? 'NG' : '未完成' }}
+      </AlertTitle>
+      <AlertDescription>{{ cycleTest.auto_judge_message }}</AlertDescription>
     </Alert>
 
     <!-- 步骤配置序列列表 -->
@@ -336,10 +372,10 @@ function handleResetToDefault() {
           size="sm"
           variant="default"
           class="h-10 w-full"
-          :disabled="!axleStore.isConnected || axleStore.cycleLoading || axleStore.isEmergencyLocked"
+          :disabled="!axleStore.isConnected || axleStore.cycleLoading || axleStore.isEmergencyLocked || cycle.isAutoJudging.value"
           @click="cycle.startTest"
         >
-          <Spinner v-if="axleStore.cycleLoading" data-icon="inline-start" />
+          <Spinner v-if="axleStore.cycleLoading || cycle.isAutoJudging.value" data-icon="inline-start" />
           <PlayIcon v-else data-icon="inline-start" />
           <span>{{ axleStore.cycleLoading ? '正在启动' : '开始工况测试' }}</span>
         </Button>

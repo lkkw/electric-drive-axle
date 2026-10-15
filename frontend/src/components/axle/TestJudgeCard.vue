@@ -2,6 +2,7 @@
 /**
  * 试车判定：展示当前这台电驱桥的试车统计，操作员判定合格 / NG。
  * 判定时后端把结果写入 PLC Result 上传 MES、保存试车记录，并清零统计开始下一台。
+ * 循环测试结束后由后端自动判定，循环执行中与自动判定期间不允许手动判定。
  */
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
@@ -29,6 +30,7 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Spinner } from '@/components/ui/spinner'
+import { useAxleStore } from '@/stores/useAxleStore'
 import { usePlcStore } from '@/stores/usePlcStore'
 import type { TestResult, TestSessionStats } from '@/types/testRecords'
 import { formatDuration, formatValue } from '@/views/testRecordUtils'
@@ -36,6 +38,7 @@ import { formatDuration, formatValue } from '@/views/testRecordUtils'
 const POLL_INTERVAL_MS = 1000
 
 const plc = usePlcStore()
+const axleStore = useAxleStore()
 
 const session = ref<TestSessionStats | null>(null)
 const remark = ref('')
@@ -48,6 +51,16 @@ const confirmOpen = computed({
   set: (open: boolean) => {
     if (!open) confirmResult.value = null
   },
+})
+
+/** 手动判定被禁止的原因；与后端 judge_blocker 一致 */
+const judgeBlockedReason = computed(() => {
+  const cycle = axleStore.telemetry.cycle_test
+  if (cycle.status === 'running' || cycle.status === 'paused') {
+    return '循环测试执行中，结束后自动判定'
+  }
+  if (cycle.auto_judge === 'pending') return '正在自动判定 / 下电，请稍候'
+  return null
 })
 
 const serialNumber = computed(() => plc.status.serial_number || '')
@@ -116,7 +129,7 @@ onUnmounted(() => {
         </Button>
       </div>
       <CardDescription>
-        判定后结果写入 PLC 上传 MES，并保存试车记录；统计清零，开始下一台。
+        循环测试跑完后自动判定并下电；手动测试时在此判定。判定结果写入 PLC 上传 MES 并保存试车记录，统计清零开始下一台。
       </CardDescription>
     </CardHeader>
 
@@ -157,11 +170,24 @@ onUnmounted(() => {
         placeholder="备注（可选，例如 NG 原因）"
         class="h-10 min-w-48 flex-1"
       />
-      <Button class="h-10 w-28" variant="success" @click="confirmResult = 1">
+      <span v-if="judgeBlockedReason" class="w-full text-sm text-muted-foreground">
+        {{ judgeBlockedReason }}
+      </span>
+      <Button
+        class="h-10 w-28"
+        variant="success"
+        :disabled="Boolean(judgeBlockedReason)"
+        @click="confirmResult = 1"
+      >
         <CircleCheckIcon data-icon="inline-start" />
         合格
       </Button>
-      <Button class="h-10 w-28" variant="destructive" @click="confirmResult = 2">
+      <Button
+        class="h-10 w-28"
+        variant="destructive"
+        :disabled="Boolean(judgeBlockedReason)"
+        @click="confirmResult = 2"
+      >
         <CircleXIcon data-icon="inline-start" />
         NG
       </Button>

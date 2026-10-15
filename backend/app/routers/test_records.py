@@ -6,7 +6,7 @@ import os
 from datetime import date
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.schemas.test_records import (
     TestRecord,
@@ -15,8 +15,9 @@ from app.schemas.test_records import (
     TestRecordJudgeResponse,
     TestSessionStats,
 )
+from app.services import auto_judge
 from app.services.axle_manager import AxleManager, get_axle_manager
-from app.services.plc_manager import PlcOperationError, PlcPowerManager, get_plc_manager
+from app.services.plc_manager import PlcPowerManager, get_plc_manager
 from app.services.test_records import TestRecordFilters, TestRecordStore, get_test_record_store
 
 logger = logging.getLogger("app.test_records")
@@ -47,33 +48,14 @@ async def judge_test(
     """把结果写入 PLC Result 上传 MES，保存试车记录，并清零统计开始下一台。
 
     PLC 未连接或写入失败时仍保存记录（标记未写入 PLC），并在返回信息中提示。
+    循环测试执行中或正在自动判定时拒绝，避免与自动判定重复。
     """
-    session = axle.test_session.snapshot()
-    label = "合格" if request.result == 1 else "NG"
-    plc_written = False
-    plc_issue: str | None = None
-    try:
-        await plc.write_result(request.result)
-        plc_written = True
-    except PlcOperationError as err:
-        plc_issue = err.message
-
-    record = await asyncio.to_thread(
-        store.add,
-        result=request.result,
-        remark=request.remark,
-        sn=plc.serial_number(),
-        session=session,
-        plc_result_written=plc_written,
+    blocker = axle.judge_blocker()
+    if blocker:
+        raise HTTPException(status_code=409, detail=blocker)
+    return await auto_judge.judge_test(
+        result=request.result, remark=request.remark, axle=axle, plc=plc, store=store
     )
-    axle.test_session.reset()
-
-    message = f"已判定{label}并保存试车记录"
-    if plc_written:
-        message += "，结果已写入 PLC"
-    else:
-        message += f"；结果未写入 PLC（{plc_issue}）"
-    return TestRecordJudgeResponse(record=record, message=message)
 
 
 def _filters(

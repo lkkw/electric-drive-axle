@@ -837,6 +837,38 @@ def test_link_failure_auto_disconnects_and_reports_reason() -> None:
     asyncio.run(run_test())
 
 
+def test_idle_bus_no_response_warns_without_disconnect() -> None:
+    """空闲时发送持续超时（控制器未上电）只提示不断开；恢复后提示消失，使能后再超时即断开。"""
+
+    async def run_test() -> None:
+        driver = create_mock_driver()
+        manager = AxleManager(driver=driver)
+        await manager.connect(CanConnectRequest())
+
+        driver.transmit.side_effect = CanDriverError("CAN 报文发送超时（0.5s）")
+        await asyncio.sleep(1.3)
+        telemetry = manager.get_telemetry()
+        assert manager.is_connected
+        assert telemetry.link_error is None
+        assert telemetry.bus_warning is not None
+        assert "控制器" in telemetry.bus_warning
+
+        driver.transmit.side_effect = None
+        await asyncio.sleep(0.1)
+        assert manager.get_telemetry().bus_warning is None
+
+        # 测试进行中（已使能）仍按链路失效自动断开
+        driver.receive.side_effect = lambda **_: [benign_mcu_2_frame()]
+        await manager.update_command(VcuCommandUpdateRequest(mcu_en_cmd=VcuMcuEnCmd.ENABLE))
+        driver.transmit.side_effect = CanDriverError("CAN 报文发送超时（0.5s）")
+        await asyncio.sleep(1.3)
+        assert not manager.is_connected
+        assert manager.get_telemetry().link_error is not None
+        assert manager.get_telemetry().bus_warning is None
+
+    asyncio.run(run_test())
+
+
 def test_broadcasts_periodically_without_rx_frames() -> None:
     """总线无报文时也必须按固定节拍推送快照。"""
 

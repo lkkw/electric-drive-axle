@@ -43,7 +43,7 @@ const navItems = [
     icon: PlugZap,
   },
   {
-    title: '电驱桥控制台',
+    title: '下线测试',
     url: '/axle',
     icon: Sliders,
   },

@@ -109,7 +109,7 @@ onMounted(loadRecords)
         </div>
       </div>
       <CardDescription>
-        每次在电驱桥控制台判定合格 / NG 时保存一条，记录保存在本机。导出的 CSV 可直接用 Excel 打开。
+        每次在下线测试页判定合格 / NG 时保存一条，记录保存在本机。导出的 CSV 可直接用 Excel 打开。
       </CardDescription>
     </CardHeader>
 

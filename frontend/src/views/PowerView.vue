@@ -410,7 +410,7 @@ onMounted(async () => {
             将通过 PLC 给台架接通 {{ status.target_voltage }} V 高压。请确认人员已离开高压区域、线束连接可靠。
           </DialogDescription>
           <DialogDescription v-else>
-            将先关闭电机使能，再断开高压。电机仍在转动时，建议先在电驱桥控制台点“停机”，等电机停稳后再下电。
+            将先关闭电机使能，再断开高压。电机仍在转动时，建议先在下线测试页点“停机”，等电机停稳后再下电。
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
