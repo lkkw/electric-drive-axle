@@ -38,21 +38,21 @@ describe('FaultCodeDialog & Fault Code Mapping Specifications', () => {
     expect(flt64).toBeDefined()
     expect(flt64?.code).toBe('MCU_64')
     expect(flt64?.meaning).toBe('VCE过流故障')
-    expect(flt64?.level).toBe('三级 (Fault)')
+    expect(flt64?.level).toBe('三级')
 
     // 典型故障码 MCU_11 (IGBT采样温度降额)
     const flt11 = getMcuFaultInfo(11)
     expect(flt11).toBeDefined()
     expect(flt11?.code).toBe('MCU_11')
     expect(flt11?.meaning).toBe('IGBT采样温度降额')
-    expect(flt11?.level).toBe('二级 (Derat)')
+    expect(flt11?.level).toBe('二级')
 
     // 典型故障码 MCU_105 (电机定子温度传感器1电路输出电压高(断路))
     const flt105 = getMcuFaultInfo(105)
     expect(flt105).toBeDefined()
     expect(flt105?.code).toBe('MCU_105')
     expect(flt105?.meaning).toBe('电机定子温度传感器1电路输出电压高(断路)')
-    expect(flt105?.level).toBe('二级 (Limp)')
+    expect(flt105?.level).toBe('二级')
 
     // 未知故障码
     expect(getMcuFaultInfo(255)).toBeUndefined()
@@ -112,10 +112,9 @@ describe('FaultCodeDialog & Fault Code Mapping Specifications', () => {
     const resHex0x0b = filterCodes('0x0b')
     expect(resHex0x0b.some((i) => i.code === 'MCU_11')).toBe(true)
 
-    // 故障等级检索: "三级", "Derat", "Limp"
+    // 故障等级检索: "三级" 11 条、"二级" 11 条
     expect(filterCodes('三级').length).toBe(11)
-    expect(filterCodes('Derat').length).toBe(6)
-    expect(filterCodes('Limp').length).toBe(5)
+    expect(filterCodes('二级').length).toBe(11)
 
     // 中文含义模糊检索: "过温"
     const resOverTemp = filterCodes('过温')

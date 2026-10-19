@@ -5,6 +5,7 @@ import {
   RotateCcwIcon,
   SendIcon,
   SquareIcon,
+  TriangleAlertIcon,
 } from "@lucide/vue";
 import { toast } from "vue-sonner";
 
@@ -12,6 +13,15 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   InputGroup,
   InputGroupAddon,
@@ -28,14 +38,12 @@ import {
 } from "@/components/ui/select";
 import {
   Field,
-  FieldContent,
-  FieldDescription,
   FieldError,
   FieldGroup,
   FieldLabel,
-  FieldTitle,
 } from "@/components/ui/field";
 import { Spinner } from "@/components/ui/spinner";
+import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import CycleTestPanel from "@/components/axle/CycleTestPanel.vue";
 import { useCycleTest } from "@/composables/useCycleTest";
@@ -219,7 +227,7 @@ async function handleApplyTarget() {
 }
 
 /** 切换使能状态（带防飞车保护） */
-async function handleToggleEnable() {
+async function handleToggleEnable(enabled?: boolean) {
   if (!axleStore.isConnected || axleStore.loading || isCommandBlocked.value) {
     return;
   }
@@ -227,7 +235,7 @@ async function handleToggleEnable() {
   const previousEnable = form.mcu_en_cmd;
   const previousTarget = form.target_value;
   const previousEditing = isTargetEditing.value;
-  const shouldEnable = form.mcu_en_cmd === 0;
+  const shouldEnable = enabled ?? form.mcu_en_cmd === 0;
 
   try {
     if (shouldEnable) {
@@ -283,11 +291,31 @@ async function handleSetGear(value: unknown) {
  * 切换工作模式：立即下发至下位机。
  * 电控防冲击保护：模式切换时强制将目标扭矩与目标速度归零同步下发，杜绝带载突变飞车或急刹风险。
  */
-async function handleSetMode(value: unknown) {
+function handleSetMode(value: unknown) {
   const mode = Number(value);
   if (mode !== 1 && mode !== 3) {
     return;
   }
+  if (!axleStore.isConnected || axleStore.loading || isCommandBlocked.value) {
+    return;
+  }
+  // 空载台架切扭矩模式需二次确认；确认前选择框保持原模式
+  if (mode === 1 && form.work_mode_req !== 1) {
+    isTorqueConfirmOpen.value = true;
+    return;
+  }
+  void applyMode(mode);
+}
+
+/** 空载扭矩模式二次确认弹窗 */
+const isTorqueConfirmOpen = ref(false);
+
+function handleConfirmTorqueMode() {
+  isTorqueConfirmOpen.value = false;
+  void applyMode(1);
+}
+
+async function applyMode(mode: number) {
   if (!axleStore.isConnected || axleStore.loading || isCommandBlocked.value) {
     return;
   }
@@ -432,24 +460,36 @@ async function handleEmergencyReset() {
         class="data-[state=inactive]:hidden flex-1 flex flex-col m-0"
       >
         <CardContent class="p-4 sm:p-5 flex-1 flex flex-col gap-4">
-      <!-- 使能操作：实际使能反馈集中展示在 MCU 实时反馈卡片。 -->
-      <Field orientation="horizontal" class="rounded-lg border p-3">
-        <FieldContent>
-          <FieldTitle>MCU 使能</FieldTitle>
-          <FieldDescription>开启使能时目标转矩与转速强制归零。</FieldDescription>
-        </FieldContent>
-        <Button
-          size="sm"
-          :variant="form.mcu_en_cmd === 1 ? 'success' : 'outline'"
-          class="h-9 w-28"
-          :disabled="!axleStore.isConnected || axleStore.loading || isCommandBlocked"
-          @click="handleToggleEnable"
-        >
-          {{ form.mcu_en_cmd === 1 ? "关闭使能" : "开启使能" }}
-        </Button>
-      </Field>
-
       <FieldGroup class="flex flex-col gap-4">
+        <!-- MCU 使能：与下方挡位、工作模式统一为“标签在上 + 等高控件框”，整框可点击切换 -->
+        <Field
+          :data-disabled="
+            !axleStore.isConnected || axleStore.loading || isCommandBlocked || undefined
+          "
+        >
+          <FieldLabel for="mcu-enable">MCU 使能</FieldLabel>
+          <label
+            for="mcu-enable"
+            class="flex h-9 w-full cursor-pointer items-center justify-between gap-2 rounded-lg border border-input bg-transparent py-2 pr-2.5 pl-2.5 text-sm transition-colors select-none dark:bg-input/30 has-data-checked:border-success/40 has-data-checked:bg-success/5 has-data-disabled:cursor-not-allowed has-data-disabled:opacity-50"
+          >
+            <span class="flex items-center gap-2">
+              <span
+                class="size-2 rounded-full"
+                :class="form.mcu_en_cmd === 1 ? 'bg-success' : 'bg-muted-foreground/40'"
+              />
+              <span :class="form.mcu_en_cmd === 1 ? 'text-success font-medium' : 'text-muted-foreground'">
+                {{ form.mcu_en_cmd === 1 ? "已使能" : "未使能" }}
+              </span>
+            </span>
+            <Switch
+              id="mcu-enable"
+              :model-value="form.mcu_en_cmd === 1"
+              :disabled="!axleStore.isConnected || axleStore.loading || isCommandBlocked"
+              @update:model-value="handleToggleEnable"
+            />
+          </label>
+        </Field>
+
         <!-- 挡位选择 -->
         <Field>
           <FieldLabel>挡位选择</FieldLabel>
@@ -585,5 +625,26 @@ async function handleEmergencyReset() {
         </CardContent>
       </TabsContent>
     </Card>
+
+    <!-- 空载台架切换扭矩模式的二次确认 -->
+    <Dialog v-model:open="isTorqueConfirmOpen">
+      <DialogContent class="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle class="flex items-center gap-2">
+            <TriangleAlertIcon class="size-5 text-warning" />
+            确认切换到扭矩模式？
+          </DialogTitle>
+          <DialogDescription>
+            当前为空载测试，电机无负载，扭矩模式下较小的目标扭矩也可能使转速快速升高。确定要选择扭矩模式吗？
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <DialogClose as-child>
+            <Button variant="outline">取消</Button>
+          </DialogClose>
+          <Button @click="handleConfirmTorqueMode">确定切换</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   </Tabs>
 </template>

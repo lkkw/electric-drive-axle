@@ -17,6 +17,7 @@ from app.core.can.driver import CanDriverError, CanRawFrame, ZlgCanDriver
 from app.schemas.axle import (
     AxleSafetyConfig,
     CanConnectRequest,
+    CanSendRawFrameRequest,
     CycleTestStartRequest,
     CycleTestStep,
     VcuCommandUpdateRequest,
@@ -939,3 +940,20 @@ def test_log_throttle_suppresses_repeated_warnings(caplog: pytest.LogCaptureFixt
         for _ in range(20):
             manager._log_throttled("demo", logging.WARNING, "重复告警 %d", 1)
     assert len([r for r in caplog.records if "重复告警" in r.getMessage()]) == 1
+
+
+def test_raw_vcu_11_rejected_while_emergency_locked() -> None:
+    async def run_test() -> None:
+        manager = AxleManager(driver=create_mock_driver())
+        await manager.connect(CanConnectRequest())
+        try:
+            await manager.emergency_stop()
+            enable_frame = CanSendRawFrameRequest(can_id=0x258, data_hex="00 00 00 00 00 00 01 00")
+            with pytest.raises(CanDriverError, match="急停锁定"):
+                await manager.send_raw_frame(enable_frame)
+            # 其他诊断报文不受影响
+            assert await manager.send_raw_frame(CanSendRawFrameRequest(can_id=0x7DF))
+        finally:
+            await manager.disconnect()
+
+    asyncio.run(run_test())

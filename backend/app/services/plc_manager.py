@@ -5,7 +5,8 @@
 - 上电：确认 Safe=1 → 一次写入 22 字节控制区（Request_power=1、产品编号 1、
   电压 340 V，其余清零）→ 每 0.2 s 轮询，最长 30 s 等到 Power_on=1 且 Connect=1；
   超时由后端自己复位 Request_power。
-- 下电：先关闭电机使能 → Request_power=0 → 最长 5 s 确认 Power_on、Connect 均为 0。
+- 下电：先关闭电机使能（电机仍在转时最多等 10 s 停稳）→ Request_power=0 →
+  最长 5 s 确认 Power_on、Connect 均为 0。
 - 常驻监视（0.2 s）：已请求上电或已通电时 Safe=0 → 复位 Request_power 并触发急停。
 - 心跳：每秒翻转上位机心跳，检测 PLC 心跳跳变；只用于显示。
 - MES 上传：常驻监视中把电机实际转速 (rpm)、电机温度 (℃) 写入 Speed / Temp，
@@ -68,7 +69,7 @@ LOG_THROTTLE_SECONDS = 5.0
 
 ClientFactory = Callable[[PlcConfig], StationClient]
 SafetyTripHook = Callable[[str], Awaitable[None]]
-BeforePowerOffHook = Callable[[], Awaitable[None]]
+BeforePowerOffHook = Callable[[], Awaitable[str | None]]  # 返回需要提示操作员的问题
 PowerOnBlocker = Callable[[], str | None]
 MesTelemetrySource = Callable[[], tuple[float, float]]
 
@@ -270,8 +271,9 @@ class PlcPowerManager:
     # ------------------------------------------------------------------
     async def connect(self, config: PlcConfig) -> PlcStatus:
         async with self._connection_lock:
-            if self._connected and self._feedback is not None and self._feedback.supply_active:
-                raise PlcOperationError(409, "台架仍在供电，请先下电再切换 PLC 连接")
+            await self._prepare_release_locked(
+                "切换 PLC 连接", "台架仍在供电，请先下电再切换 PLC 连接"
+            )
             await self._disconnect_locked()
 
             client = self._client_factory(config)
@@ -307,17 +309,38 @@ class PlcPowerManager:
 
     async def disconnect(self) -> PlcStatus:
         async with self._connection_lock:
-            if self._connected and self._feedback is not None and self._feedback.supply_active:
-                raise PlcOperationError(
-                    409, "台架仍在供电（已请求上电或接触器吸合），请先下电再断开 PLC"
-                )
+            await self._prepare_release_locked(
+                "断开 PLC", "台架仍在供电（已请求上电或接触器吸合），请先下电再断开 PLC"
+            )
             was_connected = self._connected
             await self._disconnect_locked()
         if was_connected:
             events.info("PLC 已断开")
         return self.status()
 
+    async def _prepare_release_locked(self, action: str, powered_message: str) -> None:
+        """断开 / 切换连接前的检查。
+
+        - 通讯正常且仍在供电：拒绝，要求先下电；
+        - 通讯已中断：无法确认供电状态，尽力复位上电请求后放行，以便重新连接恢复监视；
+        - 上电 / 下电进行中：拒绝，避免关掉连接后留下上电请求无人复位。
+          放在最后检查，且与随后的 _disconnect_locked 之间没有 await。
+        """
+        if not self._connected:
+            return
+        if self.status().communication_ok:
+            if self._feedback is not None and self._feedback.supply_active:
+                raise PlcOperationError(409, powered_message)
+        elif self._feedback is not None and self._feedback.supply_active:
+            self._abort_power_on = True
+            await self._reset_request_power_quietly(f"通讯中断时{action}")
+            events.warning("PLC 通讯中断，%s前已尝试复位上电请求，请现场确认高压已断开", action)
+        if self._operation_lock.locked():
+            raise PlcOperationError(409, f"PLC 正在执行上电或下电，请完成后再{action}")
+
     async def _disconnect_locked(self) -> None:
+        # 先标记断开：之后新的上电 / 下电会在 _require_client 处直接拒绝
+        self._connected = False
         task, self._monitor_task = self._monitor_task, None
         if task is not None:
             task.cancel()
@@ -458,6 +481,8 @@ class PlcPowerManager:
             raise PlcOperationError(409, "PLC 正在执行上电或下电，请勿重复提交")
         async with self._operation_lock:
             self._require_client()
+            # 取得锁后立即清除中止标记：此后到达的下电 / 急停不会被覆盖
+            self._abort_power_on = False
             if self._power_on_blocker is not None:
                 reason = self._power_on_blocker()
                 if reason:
@@ -471,10 +496,11 @@ class PlcPowerManager:
             if feedback.power_on and feedback.connect:
                 return self._result("success", "台架已处于上电状态")
 
-            self._abort_power_on = False
             self._operation = "powering_on"
             succeeded = False
             try:
+                if self._abort_power_on:
+                    raise PlcOperationError(409, "上电已中止（收到下电、急停或安全回路断开）")
                 try:
                     await self._update(
                         OFFSET_PC_STATUS,
@@ -532,9 +558,12 @@ class PlcPowerManager:
                 issues: list[str] = []
                 if self._before_power_off is not None:
                     try:
-                        await self._before_power_off()
+                        note = await self._before_power_off()
                     except Exception as err:
                         issues.append(f"关闭电机使能未确认: {err}")
+                    else:
+                        if note:
+                            issues.append(note)
 
                 try:
                     await self._write_bit(BIT_REQUEST_POWER, False, "下电")

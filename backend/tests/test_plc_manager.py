@@ -2,11 +2,12 @@
 
 import asyncio
 import struct
+import time
 from pathlib import Path
 
 import pytest
 
-from app.core.plc.client import SimulatedStationClient
+from app.core.plc.client import PlcClientError, SimulatedStationClient
 from app.schemas.axle import CanConnectRequest, VcuCommandUpdateRequest
 from app.schemas.plc import PlcConfig
 from app.services.axle_manager import AxleManager
@@ -378,5 +379,105 @@ def test_power_on_blocked_while_motor_enabled_and_power_off_disables_first() -> 
         finally:
             await axle.disconnect()
             await manager.shutdown()
+
+    asyncio.run(run_test())
+
+
+def test_disconnect_refused_while_power_on_in_progress() -> None:
+    async def run_test() -> None:
+        sim = SimulatedStationClient(power_on_delay_s=5.0, power_off_delay_s=0.05)
+        manager, _, _ = make_manager(sim, power_on_timeout_s=5.0)
+        await manager.connect(SIM_CONFIG)
+        try:
+            on_task = asyncio.create_task(manager.power_on())
+            await asyncio.sleep(0.01)  # 已写入上电请求，缓存反馈可能还没刷新
+            with pytest.raises(PlcOperationError, match="正在执行上电"):
+                await manager.disconnect()
+            with pytest.raises(PlcOperationError, match="正在执行上电"):
+                await manager.connect(SIM_CONFIG)
+            assert manager.status().connected
+
+            await manager.power_off()
+            with pytest.raises(PlcOperationError):
+                await on_task
+            assert not request_power_bit(sim)
+        finally:
+            await manager.shutdown()
+
+    asyncio.run(run_test())
+
+
+def test_disconnect_allowed_after_communication_lost_while_powered() -> None:
+    async def run_test() -> None:
+        manager, sim, _ = make_manager()
+        await manager.connect(SIM_CONFIG)
+        try:
+            await manager.power_on()
+
+            def broken(*_args: object) -> bytearray:
+                raise PlcClientError("模拟网线断开")
+
+            sim.read_station = broken  # type: ignore[method-assign]
+            sim.update = broken  # type: ignore[method-assign]
+            await asyncio.sleep(1.2)  # 反馈过期
+            assert not manager.status().communication_ok
+
+            # 通讯中断时不能被“仍在供电”的旧反馈锁死，否则无法重连恢复监视
+            await manager.disconnect()
+            assert not manager.status().connected
+
+            del sim.read_station, sim.update
+            await manager.connect(SIM_CONFIG)
+            assert manager.status().communication_ok
+            assert manager.status().power_state == "powered"
+        finally:
+            await manager.power_off()
+            await manager.shutdown()
+
+    asyncio.run(run_test())
+
+
+def test_power_off_reports_motor_still_spinning() -> None:
+    async def run_test() -> None:
+        manager, sim, fake = make_manager()
+
+        async def still_spinning() -> str | None:
+            return "等待 10 s 电机仍未停稳（800 rpm）"
+
+        manager._before_power_off = still_spinning
+        await manager.connect(SIM_CONFIG)
+        try:
+            await manager.power_on()
+            result = await manager.power_off()
+            assert result.status == "partial"
+            assert "已下电" in result.message and "未停稳" in result.message
+            assert not request_power_bit(sim)
+        finally:
+            await manager.shutdown()
+
+    asyncio.run(run_test())
+
+
+def test_axle_power_off_waits_for_motor_stop_without_blocking() -> None:
+    async def run_test() -> None:
+        axle = AxleManager(driver=create_mock_driver())
+        await axle.connect(CanConnectRequest())
+        try:
+            # 没有转速反馈（控制器不在线）：不等待
+            started = time.monotonic()
+            assert await axle.disable_for_power_off(motor_stop_timeout_s=5.0) is None
+            assert time.monotonic() - started < 1.0
+
+            # 电机仍在转：等到超时后照常放行并给出提示
+            axle._mcu_2.mcu_act_motor_spd = 800
+            axle._mcu_2_last_rx_timestamp = time.time() + 10
+            note = await axle.disable_for_power_off(motor_stop_timeout_s=0.2)
+            assert note is not None and "800 rpm" in note
+
+            # 停稳后立即放行
+            axle._mcu_2.mcu_act_motor_spd = 0
+            assert await axle.disable_for_power_off(motor_stop_timeout_s=5.0) is None
+        finally:
+            await axle.disconnect()
 
     asyncio.run(run_test())

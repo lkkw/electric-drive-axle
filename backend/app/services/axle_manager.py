@@ -96,6 +96,8 @@ SOFT_STOP_SPEED_THRESHOLD_RPM = 30
 # 平稳停机最长等待时间；超时仍强制关闭使能（电机随后自由滑行）。
 SOFT_STOP_TIMEOUT_SECONDS = 30.0
 SOFT_STOP_POLL_SECONDS = 0.05
+# 手动下电前，电机仍在转时等待停稳的最长时间；超时照常下电并在结果中提示。
+POWER_OFF_MOTOR_STOP_TIMEOUT_SECONDS = 10.0
 
 SAFETY_METRIC_LABELS: dict[SafetyMetric, str] = {
     "motor_speed": "实际转速",
@@ -177,6 +179,7 @@ class AxleManager:
         self._mcu_tbox = McuTboxTelemetry()
         # 当前这台电驱桥的试车统计（试车记录用），操作员判定后清零
         self.test_session = TestSession()
+        self._manual_judging = False  # 操作员手动判定进行中：期间不允许启动循环测试
 
         # 通信统计
         self._connected: bool = False
@@ -642,6 +645,8 @@ class AxleManager:
                 raise CanDriverError("已有循环测试正在执行。")
             if self._cycle_status.auto_judge == "pending":
                 raise CanDriverError("上一轮循环测试正在自动判定 / 下电，请稍候。")
+            if self._manual_judging:
+                raise CanDriverError("正在保存试车判定，请稍候。")
 
             self._cancel_soft_stop_locked()
             # 自动判定只看本轮循环：清掉循环前手动调试期间累计的统计与故障码
@@ -908,7 +913,22 @@ class AxleManager:
             return "循环测试正在执行，结束后会自动判定"
         if self._cycle_status.auto_judge == "pending":
             return "循环测试正在自动判定 / 下电，请稍候"
+        if self._manual_judging:
+            return "试车判定正在保存，请勿重复提交"
         return None
+
+    def begin_manual_judge(self) -> str | None:
+        """检查并占用手动判定；返回拒绝原因，None 表示已占用，结束后必须调用 end_manual_judge。
+
+        检查与置位之间没有 await，与 start_cycle_test 的检查互斥。
+        """
+        blocker = self.judge_blocker()
+        if blocker is None:
+            self._manual_judging = True
+        return blocker
+
+    def end_manual_judge(self) -> None:
+        self._manual_judging = False
 
     async def report_auto_judge(self, result: int | None, message: str) -> None:
         """自动判定流程结束后回写结论，通过遥测推送给界面。"""
@@ -965,11 +985,17 @@ class AxleManager:
             temp = float(self._mcu_tbox.mcu_motor_temp)
         return speed, temp
 
-    async def disable_for_power_off(self) -> None:
-        """PLC 下电前：结束循环测试与平稳停机，关闭使能并等待安全帧发出。"""
+    async def disable_for_power_off(
+        self, motor_stop_timeout_s: float = POWER_OFF_MOTOR_STOP_TIMEOUT_SECONDS
+    ) -> str | None:
+        """PLC 下电前：结束循环测试与平稳停机，关闭使能并等待安全帧发出。
+
+        有新鲜转速反馈且电机仍在转时，最多等待 motor_stop_timeout_s 让其停稳；
+        超时不阻止下电，返回提示文字。没有转速反馈（CAN 未连接、控制器不在线）时不等待。
+        """
         async with self._lock:
             if not self._connected:
-                return
+                return None
             self._cancel_soft_stop_locked()
             if self._cycle_status.status in {"running", "paused"}:
                 self._finish_cycle_locked("stopped", error="PLC 下电")
@@ -980,6 +1006,22 @@ class AxleManager:
         await asyncio.sleep(TX_INTERVAL_SECONDS * 5)
         if was_enabled:
             events.info("PLC 下电前已关闭电机使能")
+
+        deadline = time.monotonic() + motor_stop_timeout_s
+        while True:
+            received_at = self._mcu_2_last_rx_timestamp
+            if (
+                not self._connected
+                or received_at is None
+                or time.time() - received_at > MCU_2_SAFETY_FRESHNESS_SECONDS
+                or abs(self._mcu_2.mcu_act_motor_spd) <= SOFT_STOP_SPEED_THRESHOLD_RPM
+            ):
+                return None
+            if time.monotonic() >= deadline:
+                speed = self._mcu_2.mcu_act_motor_spd
+                events.warning("PLC 下电前等待电机停稳超时，当前转速 %d rpm", speed)
+                return f"等待 {motor_stop_timeout_s:g} s 电机仍未停稳（{speed} rpm）"
+            await asyncio.sleep(SOFT_STOP_POLL_SECONDS)
 
     async def external_safety_trip(self, metric: SafetyMetric, message: str) -> None:
         """外部安全条件（如 PLC Safe 断开）触发的自动停机：记录事件并急停。"""
@@ -1311,6 +1353,10 @@ class AxleManager:
                 and request.can_id == CAN_ID_VCU_11
             ):
                 raise CanDriverError("循环测试运行期间禁止手动下发 VCU_11 (0x258) 控制帧。")
+            if self._is_emergency_locked and request.can_id == CAN_ID_VCU_11:
+                raise CanDriverError(
+                    "系统处于急停锁定状态，禁止手动下发 VCU_11 (0x258) 控制帧。请先完成复位。"
+                )
 
             valid_channels = [ch for ch in self._channels() if self._driver.is_channel_open(ch)]
 

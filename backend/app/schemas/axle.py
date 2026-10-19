@@ -316,5 +316,5 @@ class McuFaultCodeItem(BaseModel):
 
     code: str = Field(description="DisplayCode 仪表显示码 / 故障码 (列 E，例如 'MCU_64')")
     meaning: str = Field(description="DTC 含义 (列 D，例如 'VCE过流故障')")
-    level: str = Field(description="FaultLevel 故障等级 (列 F，例如 '三级 (Fault)')")
+    level: str = Field(description="故障等级 (列 F，例如 '三级')")
     raw_code: int = Field(description="CAN 信号 MCU_FltCode 对应原始数值")
