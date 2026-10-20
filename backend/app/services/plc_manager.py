@@ -12,9 +12,12 @@
 - MES 上传：常驻监视中把电机实际转速 (rpm)、电机温度 (℃) 写入 Speed / Temp，
   与 PLC 中的值不同时才写；CAN 未连接或反馈过期时写 0。
 - 反向联动：电驱桥急停或 CAN 链路故障时，立即复位 Request_power 切断高压。
+- PLC 读写全部在一个专用单线程里按提交顺序执行：调用超时后已提交的写入仍会执行，
+  但一定排在随后提交的复位之前，不会出现“复位先写、迟到的上电请求后写”。
 """
 
 import asyncio
+import concurrent.futures
 import logging
 import math
 import os
@@ -83,6 +86,11 @@ class PlcOperationError(Exception):
         self.message = message
 
 
+def _consume_exception(future: asyncio.Future[Any]) -> None:
+    if not future.cancelled() and future.exception() is not None:
+        logger.debug("PLC 调用在等待方离开后失败: %s", future.exception())
+
+
 def default_client_factory(config: PlcConfig) -> StationClient:
     if config.simulation:
         return SimulatedStationClient()
@@ -121,6 +129,7 @@ class PlcPowerManager:
         power_on_timeout_s: float = POWER_ON_TIMEOUT_SECONDS,
         power_off_timeout_s: float = POWER_OFF_TIMEOUT_SECONDS,
         poll_interval_s: float = STATUS_POLL_SECONDS,
+        io_timeout_s: float = IO_TIMEOUT_SECONDS,
     ) -> None:
         self._config_path = config_path
         self._config = load_plc_config(config_path)
@@ -128,6 +137,14 @@ class PlcPowerManager:
         self._power_on_timeout_s = power_on_timeout_s
         self._power_off_timeout_s = power_off_timeout_s
         self._poll_interval_s = poll_interval_s
+        self._io_timeout_s = io_timeout_s
+
+        # snap7 Client 不支持并发；单线程执行器同时保证读写按提交顺序生效
+        self._executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="plc_io"
+        )
+        # 已超时但仍在执行器里没结束的调用数；大于 0 时常驻监视不再追加读取
+        self._stalled_calls = 0
 
         self._client: StationClient | None = None
         self._connected = False
@@ -187,12 +204,27 @@ class PlcPowerManager:
     # 底层读写
     # ------------------------------------------------------------------
     async def _io(
-        self, func: Callable[..., Any], *args: Any, limit_seconds: float = IO_TIMEOUT_SECONDS
+        self, func: Callable[..., Any], *args: Any, limit_seconds: float | None = None
     ) -> Any:
+        """在 PLC 专用线程中执行一次调用。
+
+        超时只结束等待，不取消调用：已排队的写入照常按顺序执行，保证后提交的
+        复位一定在其后生效。超时调用结束前计入 ``_stalled_calls``。
+        """
+        if limit_seconds is None:
+            limit_seconds = self._io_timeout_s
+        future = asyncio.get_running_loop().run_in_executor(self._executor, func, *args)
+        # 等待方超时或被取消后没人再取结果：取走异常，避免“exception was never retrieved”
+        future.add_done_callback(_consume_exception)
         try:
-            return await asyncio.wait_for(asyncio.to_thread(func, *args), timeout=limit_seconds)
+            return await asyncio.wait_for(asyncio.shield(future), timeout=limit_seconds)
         except TimeoutError as err:
+            self._stalled_calls += 1
+            future.add_done_callback(self._on_stalled_call_done)
             raise PlcClientError(f"PLC 读写超时（{limit_seconds:g}s）") from err
+
+    def _on_stalled_call_done(self, _future: asyncio.Future[Any]) -> None:
+        self._stalled_calls -= 1
 
     def _require_client(self) -> StationClient:
         if not self._connected or self._client is None:
@@ -280,6 +312,8 @@ class PlcPowerManager:
             try:
                 await self._io(client.connect, limit_seconds=CONNECT_TIMEOUT_SECONDS)
             except PlcClientError as err:
+                # 连接超时后仍可能在后台连上：排一次断开在它后面，不留下孤立连接
+                self._executor.submit(client.disconnect)
                 raise PlcOperationError(502, str(err)) from err
 
             self._config = config.model_copy()
@@ -385,6 +419,11 @@ class PlcPowerManager:
             await asyncio.sleep(max(0.0, self._poll_interval_s - (time.monotonic() - started)))
 
     async def _monitor_step(self) -> None:
+        if self._stalled_calls:
+            # 上一次调用还卡在 PLC 线程里：不再追加读取，避免网络中断时请求越排越多。
+            # 反馈随之过期，状态显示通信中断。
+            self._log_throttled("stalled", "PLC 读写无响应，暂停常驻读取直到上一次调用结束")
+            return
         try:
             feedback = await self._refresh()
         except PlcClientError as err:
