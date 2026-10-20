@@ -12,11 +12,23 @@ export interface CycleStep {
   durationSeconds: number
 }
 
+/**
+ * 默认工况：正转 1000 / 2000 / 3000 → N 缓冲 → 反转 1000 / 2000 / 3000 → N 缓冲。
+ * 反转由 R 挡决定方向，目标转速填正值（后端拒绝负转速）。
+ * 从 3000 RPM 换向前留 10 s 缓冲让电机降速；末尾的缓冲用于多圈时反转接回正转。
+ */
+const RUN_STEP_SECONDS = 60
+const NEUTRAL_BUFFER_SECONDS = 10
+
 export const DEFAULT_CYCLE_STEPS: readonly CycleStep[] = [
-  { id: 'step-1', name: '正转运行', gear: 1, targetSpeed: 1000, durationSeconds: 60 },
-  { id: 'step-2', name: '换向缓冲', gear: 3, targetSpeed: 0, durationSeconds: 5 },
-  { id: 'step-3', name: '反转运行', gear: 2, targetSpeed: 1000, durationSeconds: 60 },
-  { id: 'step-4', name: '换向缓冲', gear: 3, targetSpeed: 0, durationSeconds: 5 },
+  { id: 'step-1', name: '正转 1000', gear: 1, targetSpeed: 1000, durationSeconds: RUN_STEP_SECONDS },
+  { id: 'step-2', name: '正转 2000', gear: 1, targetSpeed: 2000, durationSeconds: RUN_STEP_SECONDS },
+  { id: 'step-3', name: '正转 3000', gear: 1, targetSpeed: 3000, durationSeconds: RUN_STEP_SECONDS },
+  { id: 'step-4', name: '换向缓冲', gear: 3, targetSpeed: 0, durationSeconds: NEUTRAL_BUFFER_SECONDS },
+  { id: 'step-5', name: '反转 1000', gear: 2, targetSpeed: 1000, durationSeconds: RUN_STEP_SECONDS },
+  { id: 'step-6', name: '反转 2000', gear: 2, targetSpeed: 2000, durationSeconds: RUN_STEP_SECONDS },
+  { id: 'step-7', name: '反转 3000', gear: 2, targetSpeed: 3000, durationSeconds: RUN_STEP_SECONDS },
+  { id: 'step-8', name: '换向缓冲', gear: 3, targetSpeed: 0, durationSeconds: NEUTRAL_BUFFER_SECONDS },
 ]
 
 let nextStepId = 100
@@ -82,7 +94,7 @@ export function useCycleTest() {
     const gear: CycleGear = lastStep?.gear === 1 ? 2 : 1
     const newStep: CycleStep = {
       id: `step-${nextStepId++}`,
-      name: gear === 1 ? '正转运行' : '反转运行',
+      name: `${gear === 1 ? '正转' : '反转'} 1000`,
       gear,
       targetSpeed: 1000,
       durationSeconds: 60,

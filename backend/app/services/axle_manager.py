@@ -814,6 +814,9 @@ class AxleManager:
                 raise CanDriverError(
                     "循环测试已取得控制权，手动控制已锁定。请先终止循环测试，或使用急停接口。"
                 )
+            # 自动判定期间（等待停转 → 判定 → 自动下电）不接受手动指令，避免干扰判定与下电
+            if self._cycle_status.auto_judge == "pending":
+                raise CanDriverError("循环测试正在自动判定 / 下电，手动控制暂时锁定，请稍候。")
 
             # 急停互锁保护：急停状态下禁止使能或写入非零控制量
             if self._is_emergency_locked:
@@ -1350,9 +1353,11 @@ class AxleManager:
                 raise CanDriverError("USBCAN 硬件未连接，无法下发报文。")
             if (
                 self._cycle_status.status in {"running", "paused"}
-                and request.can_id == CAN_ID_VCU_11
-            ):
-                raise CanDriverError("循环测试运行期间禁止手动下发 VCU_11 (0x258) 控制帧。")
+                or self._cycle_status.auto_judge == "pending"
+            ) and request.can_id == CAN_ID_VCU_11:
+                raise CanDriverError(
+                    "循环测试运行或自动判定期间禁止手动下发 VCU_11 (0x258) 控制帧。"
+                )
             if self._is_emergency_locked and request.can_id == CAN_ID_VCU_11:
                 raise CanDriverError(
                     "系统处于急停锁定状态，禁止手动下发 VCU_11 (0x258) 控制帧。请先完成复位。"

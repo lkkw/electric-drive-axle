@@ -957,3 +957,30 @@ def test_raw_vcu_11_rejected_while_emergency_locked() -> None:
             await manager.disconnect()
 
     asyncio.run(run_test())
+
+
+def test_manual_control_rejected_while_auto_judging() -> None:
+    """循环结束后的自动判定 / 下电期间锁定手动控制；急停与非控制帧不受影响，判定完成后恢复。"""
+
+    async def run_test() -> None:
+        manager = AxleManager(driver=create_mock_driver())
+        await manager.connect(CanConnectRequest())
+        try:
+            manager._cycle_status.auto_judge = "pending"
+
+            with pytest.raises(CanDriverError, match="自动判定"):
+                await manager.update_command(VcuCommandUpdateRequest(mcu_en_cmd=1))
+            enable_frame = CanSendRawFrameRequest(can_id=0x258, data_hex="00 00 00 00 00 00 01 00")
+            with pytest.raises(CanDriverError, match="自动判定"):
+                await manager.send_raw_frame(enable_frame)
+            assert manager.get_telemetry().command.mcu_en_cmd == 0
+            # 诊断报文不受影响
+            assert await manager.send_raw_frame(CanSendRawFrameRequest(can_id=0x7DF))
+
+            manager._cycle_status.auto_judge = "done"
+            command = await manager.update_command(VcuCommandUpdateRequest(mcu_en_cmd=1))
+            assert command.mcu_en_cmd == 1
+        finally:
+            await manager.disconnect()
+
+    asyncio.run(run_test())

@@ -11,7 +11,6 @@ import { Button } from '@/components/ui/button'
 import {
   Card,
   CardContent,
-  CardDescription,
   CardFooter,
   CardHeader,
   CardTitle,
@@ -231,10 +230,9 @@ onMounted(async () => {
             <Badge :variant="connectionBadge.variant">{{ connectionBadge.label }}</Badge>
           </div>
         </div>
-        <CardDescription>西门子 S7-1500，DB40 · dbPC，参数保存在本机。</CardDescription>
       </CardHeader>
 
-      <CardContent class="flex-1 pt-5">
+      <CardContent class="flex-1">
         <FieldGroup>
           <Field :data-invalid="ipInvalid || undefined" :data-disabled="status.connected || undefined">
             <FieldLabel for="plc-ip">IP 地址</FieldLabel>
@@ -303,10 +301,10 @@ onMounted(async () => {
         </FieldGroup>
       </CardContent>
 
-      <CardFooter class="justify-end gap-2">
+      <CardFooter>
         <Button
           v-if="!status.connected"
-          class="h-10"
+          class="h-10 w-full"
           :disabled="formInvalid || plc.isBusy"
           @click="handleConnect"
         >
@@ -314,7 +312,7 @@ onMounted(async () => {
           <PlugIcon v-else data-icon="inline-start" />
           连接 PLC
         </Button>
-        <Button v-else variant="outline" class="h-10" :disabled="plc.isBusy" @click="handleDisconnect">
+        <Button v-else variant="outline" class="h-10 w-full":disabled="plc.isBusy" @click="handleDisconnect">
           <Spinner v-if="plc.pending.disconnect" data-icon="inline-start" />
           <UnplugIcon v-else data-icon="inline-start" />
           断开 PLC
@@ -326,15 +324,12 @@ onMounted(async () => {
     <Card class="lg:col-span-7">
       <CardHeader class="border-b pb-3">
         <div class="flex items-center justify-between gap-2">
-          <CardTitle>高压供电（{{ status.target_voltage }} V）</CardTitle>
+          <CardTitle>高压供电</CardTitle>
           <Badge :variant="powerBadge.variant">{{ powerBadge.label }}</Badge>
         </div>
-        <CardDescription>
-          上电前确认安全回路闭合；下电时先关闭电机使能，再断开高压。
-        </CardDescription>
       </CardHeader>
 
-      <CardContent class="flex flex-1 flex-col gap-5 pt-5">
+      <CardContent class="flex flex-1 flex-col gap-5">
         <Alert v-if="status.power_state === 'fault' && status.fault_reason" variant="destructive">
           <AlertTriangleIcon />
           <AlertTitle>供电故障</AlertTitle>

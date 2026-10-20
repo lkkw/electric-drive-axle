@@ -9,7 +9,6 @@ import {
   FAULT_LEVEL_MAP,
   getMcuFaultInfo,
   TBOX_FAULT_LEVEL_MAP,
-  WORK_MODE_MAP,
 } from "@/types/axle";
 
 type BadgeVariant = NonNullable<BadgeVariants["variant"]>;
@@ -99,23 +98,6 @@ const hasFreshMcu1 = computed(() =>
 const hasFreshTbox = computed(() =>
   isFresh(axleStore.telemetry.mcu_tbox_last_rx_timestamp, MCU_TBOX_FRESH_MS),
 );
-
-const lowVoltageStatusText = computed(() => {
-  if (!hasFreshMcu2.value) return "低压未知";
-  return mcu2.value.mcu_lv_sts === 1 ? "低压已上电" : "低压未上电";
-});
-
-const enableStatusText = computed(() => {
-  if (!hasFreshMcu2.value) return "使能未知";
-  return mcu2.value.mcu_en_sts === 1 ? "MCU 已使能" : "MCU 未使能";
-});
-
-const workModeStatusText = computed(() => {
-  if (!hasFreshMcu2.value) return "模式未知";
-  return mcu2.value.mcu_motor_work_mod === 0
-    ? "无操作"
-    : (WORK_MODE_MAP[mcu2.value.mcu_motor_work_mod] ?? "未知模式");
-});
 
 const hasOverTemperature = computed(
   () =>
@@ -218,7 +200,7 @@ const statusGroups = computed<StatusGroup[]>(() => {
   <Card class="h-full flex flex-col">
     <!-- 顶部状态栏 -->
     <CardHeader class="border-b pb-3">
-      <!-- 第一行：标题 + 故障报警与安全指示 -->
+      <!-- 标题 + 故障报警与安全指示 -->
       <div class="flex flex-wrap items-center justify-between gap-2">
         <CardTitle>MCU 实时反馈</CardTitle>
         <div class="flex flex-wrap items-center gap-2">
@@ -232,19 +214,6 @@ const statusGroups = computed<StatusGroup[]>(() => {
           <Badge v-if="hasOverTemperature" variant="destructive">过温故障</Badge>
           <FaultCodeDialog :current-flt-code="mcu1.mcu_flt_code" />
         </div>
-      </div>
-
-      <!-- 第二行：0x35B 上电、使能与模式反馈 -->
-      <div class="flex flex-wrap items-center gap-2">
-        <Badge :variant="hasFreshMcu2 && mcu2.mcu_lv_sts === 1 ? 'success' : 'secondary'">
-          {{ lowVoltageStatusText }}
-        </Badge>
-        <Badge :variant="hasFreshMcu2 && mcu2.mcu_en_sts === 1 ? 'success' : 'secondary'">
-          {{ enableStatusText }}
-        </Badge>
-        <Badge :variant="hasFreshMcu2 && mcu2.mcu_motor_work_mod !== 0 ? 'info' : 'secondary'">
-          {{ workModeStatusText }}
-        </Badge>
       </div>
     </CardHeader>
 

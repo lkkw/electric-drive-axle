@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { markRaw, onBeforeUnmount, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { RadioTowerIcon, UnplugIcon } from '@lucide/vue'
+import { UnplugIcon } from '@lucide/vue'
 import { toast } from 'vue-sonner'
 
 import SafetyTripDialog from '@/components/axle/SafetyTripDialog.vue'
@@ -36,25 +36,6 @@ watch(
       })
     } else if (!reason && previous) {
       toast.dismiss(LINK_ERROR_TOAST_ID)
-    }
-  },
-  { immediate: true },
-)
-
-// 空闲时总线无应答（多为控制器未上电）：保持连接，只提示；控制器恢复通信后自动收起。
-const BUS_WARNING_TOAST_ID = 'can-bus-warning'
-watch(
-  () => axleStore.busWarning,
-  (warning, previous) => {
-    if (warning && !previous) {
-      toast.warning('CAN 总线无应答', {
-        id: BUS_WARNING_TOAST_ID,
-        description: warning,
-        icon: markRaw(RadioTowerIcon),
-        duration: Number.POSITIVE_INFINITY,
-      })
-    } else if (!warning && previous) {
-      toast.dismiss(BUS_WARNING_TOAST_ID)
     }
   },
   { immediate: true },

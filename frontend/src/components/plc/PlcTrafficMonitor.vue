@@ -9,7 +9,6 @@ import { Button } from '@/components/ui/button'
 import {
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
@@ -131,12 +130,9 @@ onBeforeUnmount(() => {
           {{ plcOnline ? `已采样 ${snapshot?.updated_at}` : 'PLC 未连接，暂无数据' }}
         </Badge>
       </div>
-      <CardDescription>
-        软件在后台自动与 PLC 收发的全部内容（DB40 · dbPC），每秒刷新，联调时用来核对双方信号。
-      </CardDescription>
     </CardHeader>
 
-    <CardContent class="flex flex-col gap-5 pt-5">
+    <CardContent class="flex flex-col gap-5">
       <!-- 实时点表 -->
       <div class="flex flex-col gap-3">
         <span class="text-sm text-muted-foreground">实时点表（刚变化的值会高亮 2 秒）</span>

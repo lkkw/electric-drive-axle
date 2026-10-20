@@ -7,6 +7,7 @@ import {
   CircleOffIcon,
   PauseIcon,
   PlayIcon,
+  RadioTowerIcon,
   Trash2Icon,
 } from '@lucide/vue'
 
@@ -46,6 +47,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useAxleStore } from '@/stores/useAxleStore'
 import type { CanConnectRequest, CanFrameItem } from '@/types/axle'
 import {
@@ -254,16 +256,28 @@ onBeforeUnmount(() => {
               <div>
                 <CardTitle class="text-base font-semibold">USBCAN 硬件参数配置</CardTitle>
               </div>
-              <Badge
-                :variant="axleStore.isConnected ? 'success' : 'outline'"
-                :class="cn(!axleStore.isConnected && 'text-muted-foreground')"
-              >
-                <component
-                  :is="axleStore.isConnected ? CheckCircle2Icon : CircleOffIcon"
-                  data-icon="inline-start"
-                />
-                {{ axleStore.isConnected ? '硬件在线' : '未连接' }}
-              </Badge>
+              <div class="flex items-center gap-2">
+                <!-- 空闲时总线无应答（多为控制器未上电）：只在此处标出，不弹全局提示；恢复通信后自动消失 -->
+                <Tooltip v-if="axleStore.isConnected && axleStore.busWarning">
+                  <TooltipTrigger as-child>
+                    <Badge variant="warning" tabindex="0">
+                      <RadioTowerIcon data-icon="inline-start" />
+                      控制器无应答
+                    </Badge>
+                  </TooltipTrigger>
+                  <TooltipContent class="max-w-xs">{{ axleStore.busWarning }}</TooltipContent>
+                </Tooltip>
+                <Badge
+                  :variant="axleStore.isConnected ? 'success' : 'outline'"
+                  :class="cn(!axleStore.isConnected && 'text-muted-foreground')"
+                >
+                  <component
+                    :is="axleStore.isConnected ? CheckCircle2Icon : CircleOffIcon"
+                    data-icon="inline-start"
+                  />
+                  {{ axleStore.isConnected ? '硬件在线' : '未连接' }}
+                </Badge>
+              </div>
             </div>
           </CardHeader>
 

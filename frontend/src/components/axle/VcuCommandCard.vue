@@ -2,8 +2,11 @@
 import { computed, reactive, ref, watch } from "vue";
 import {
   AlertOctagonIcon,
+  LockIcon,
+  RepeatIcon,
   RotateCcwIcon,
   SendIcon,
+  SlidersHorizontalIcon,
   SquareIcon,
   TriangleAlertIcon,
 } from "@lucide/vue";
@@ -46,6 +49,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import CycleTestPanel from "@/components/axle/CycleTestPanel.vue";
+import { cycleControlLock } from "@/components/axle/controlLock";
 import { useCycleTest } from "@/composables/useCycleTest";
 import { useAxleStore } from "@/stores/useAxleStore";
 import {
@@ -57,9 +61,9 @@ import {
 const axleStore = useAxleStore();
 const cycleTest = useCycleTest();
 const activeTab = ref("manual");
-const isManualLocked = computed(
-  () => cycleTest.isRunning.value || cycleTest.isPaused.value,
-);
+/** 循环测试运行、暂停或自动判定 / 下电期间，手动控制整体锁定 */
+const cycleLock = computed(() => cycleControlLock(axleStore.telemetry.cycle_test));
+const isManualLocked = computed(() => cycleLock.value.locked);
 /** 急停互锁：后端已置位，会拒绝使能与所有非零控制量，必须显式复位 */
 const isEmergencyLocked = computed(() => axleStore.isEmergencyLocked);
 /** 手动控制整体受阻：循环测试持有控制权，或急停互锁尚未解除 */
@@ -81,9 +85,14 @@ const form = reactive({
 // 目标值编辑状态：编辑期间不让实时推送覆盖尚未下发的模式和目标值。
 const isTargetEditing = ref(false);
 
-watch(isManualLocked, (locked) => {
-  if (locked) activeTab.value = "cycle";
-});
+// immediate：循环进行中切换页面再回来时组件重新创建，锁定状态没有“变化”，也要直接停在循环测试页签
+watch(
+  isManualLocked,
+  (locked) => {
+    if (locked) activeTab.value = "cycle";
+  },
+  { immediate: true },
+);
 
 // 范围极值常量
 const TORQUE_MIN = -3000.0;
@@ -404,33 +413,26 @@ async function handleEmergencyReset() {
   <Tabs v-model="activeTab" class="h-full flex flex-col">
     <Card class="border-border shadow-xs h-full flex flex-col">
       <CardHeader class="pb-3 border-b bg-muted/20">
-        <div class="flex min-h-7 items-center">
-          <!-- 标题区域替换为手动控制与循环测试 Tabs 切换按钮，最大化节约垂直空间 -->
-          <div class="flex items-center gap-2">
-            <CardTitle class="sr-only">电驱控制</CardTitle>
-            <TabsList class="h-7.5 p-0.5 bg-muted/60 border border-border/50">
-              <TabsTrigger
-                value="manual"
-                class="h-6.5 px-3 text-xs font-semibold"
-                :disabled="isManualLocked"
-              >
-                手动控制
-              </TabsTrigger>
-              <TabsTrigger
-                value="cycle"
-                class="h-6.5 px-3 text-xs font-semibold relative flex items-center gap-1.5"
-              >
-                <span>循环测试</span>
-                <Badge
-                  v-if="isManualLocked"
-                  :variant="cycleTest.isPaused.value ? 'warning' : 'success'"
-                >
-                  {{ cycleTest.isPaused.value ? "已暂停" : "运行中" }}
-                </Badge>
-              </TabsTrigger>
-            </TabsList>
-          </div>
-        </div>
+        <!-- 标题区域即手动控制 / 循环测试切换：整行等分的分段按钮，台架上便于点选 -->
+        <CardTitle class="sr-only">电驱控制</CardTitle>
+        <TabsList class="grid h-11 w-full grid-cols-2 gap-1 border border-border/50 bg-muted/60 p-1">
+          <TabsTrigger
+            value="manual"
+            class="h-full gap-2 text-sm font-semibold"
+            :disabled="isManualLocked"
+          >
+            <LockIcon v-if="isManualLocked" class="size-4" />
+            <SlidersHorizontalIcon v-else class="size-4" />
+            <span>手动控制</span>
+          </TabsTrigger>
+          <TabsTrigger value="cycle" class="h-full gap-2 text-sm font-semibold">
+            <RepeatIcon class="size-4" />
+            <span>循环测试</span>
+            <Badge v-if="cycleLock.label" :variant="cycleLock.variant">
+              {{ cycleLock.label }}
+            </Badge>
+          </TabsTrigger>
+        </TabsList>
 
         <!-- 急停互锁状态条：互锁未解除前，后端会拒绝使能、非零控制量与循环测试 -->
         <Alert v-if="isEmergencyLocked" variant="destructive" class="mt-3">
