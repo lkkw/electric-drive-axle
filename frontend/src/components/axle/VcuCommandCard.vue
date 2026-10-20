@@ -461,7 +461,7 @@ async function handleEmergencyReset() {
         :force-mount="true"
         class="data-[state=inactive]:hidden flex-1 flex flex-col m-0"
       >
-        <CardContent class="p-4 sm:p-5 flex-1 flex flex-col gap-4">
+        <CardContent class="px-4 pb-4 sm:px-5 sm:pb-5 flex-1 flex flex-col gap-4">
       <FieldGroup class="flex flex-col gap-4">
         <!-- MCU 使能：与下方挡位、工作模式统一为“标签在上 + 等高控件框”，整框可点击切换 -->
         <Field
@@ -622,7 +622,7 @@ async function handleEmergencyReset() {
         :force-mount="true"
         class="data-[state=inactive]:hidden flex-1 flex flex-col m-0"
       >
-        <CardContent class="p-4 sm:p-5 flex-1 flex flex-col">
+        <CardContent class="px-4 pb-4 sm:px-5 sm:pb-5 flex-1 flex flex-col">
           <CycleTestPanel :cycle="cycleTest" />
         </CardContent>
       </TabsContent>

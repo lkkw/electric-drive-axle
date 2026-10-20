@@ -16,7 +16,7 @@ import { Badge } from '@/components/ui/badge'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
+import { Field, FieldLabel } from '@/components/ui/field'
 import {
   InputGroup,
   InputGroupAddon,
@@ -103,6 +103,13 @@ const statusText = computed(() => {
   }
 })
 
+/**
+ * 步骤序列的表头与每一行共用同一套列宽：序号 · 名称 · 挡位 · 目标转速 · 时长 · 删除。
+ * 名称、挡位、转速、时长按比例分配剩余宽度（转速含 RPM 后缀稍宽，时长最短），并各有最小宽度。
+ */
+const STEP_GRID =
+  'grid grid-cols-[1.25rem_minmax(4.5rem,1fr)_minmax(5.5rem,1fr)_minmax(6.5rem,1.2fr)_minmax(4.5rem,0.8fr)_1.75rem] items-center gap-1.5'
+
 const GEAR_LABEL: Record<CycleStep['gear'], string> = {
   1: 'D 挡正转',
   2: 'R 挡反转',
@@ -171,19 +178,22 @@ const autoJudgeDetail = computed(() =>
 
 <template>
   <div class="flex flex-col gap-4 flex-1">
-    <FieldGroup class="flex-row flex-wrap items-end justify-between gap-3 rounded-xl border bg-muted/25 p-3">
+    <!-- 圈数与时长：单行排布（圈数输入 · 单圈 / 总计时长 · 恢复默认） -->
+    <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
       <Field
-        class="w-32"
+        orientation="horizontal"
+        class="w-auto gap-2"
         :data-disabled="cycle.isRunning.value || cycle.isPaused.value || undefined"
       >
-        <FieldLabel for="cycle-total-loops">循环圈数</FieldLabel>
-        <InputGroup>
+        <FieldLabel for="cycle-total-loops" class="shrink-0">循环圈数</FieldLabel>
+        <InputGroup class="h-8 w-24">
           <InputGroupInput
             id="cycle-total-loops"
             v-model.number="cycle.totalLoops.value"
             type="number"
             min="1"
             max="999"
+            class="font-mono"
             :disabled="cycle.isRunning.value || cycle.isPaused.value"
           />
           <InputGroupAddon align="inline-end">
@@ -192,30 +202,27 @@ const autoJudgeDetail = computed(() =>
         </InputGroup>
       </Field>
 
-      <!-- 单圈与总耗时统计 -->
-      <div class="flex items-center gap-3 text-xs text-muted-foreground font-mono">
-        <div class="flex items-center gap-1">
-          <span>单圈:</span>
-          <span class="font-bold text-foreground">{{ cycle.singleLoopTotalDuration.value }}s</span>
-        </div>
-        <div class="flex items-center gap-1">
-          <span>总计:</span>
-          <span class="font-bold text-foreground">
-            {{ formatDuration(cycle.singleLoopTotalDuration.value * cycle.totalLoops.value) }}
-          </span>
-        </div>
-        <Button
-          v-if="cycle.isIdle.value"
-          size="sm"
-          variant="outline"
-          title="恢复初始的正反转标准步骤"
-          @click="handleResetToDefault"
-        >
-          <RotateCcwIcon data-icon="inline-start" />
-          <span>恢复默认</span>
-        </Button>
-      </div>
-    </FieldGroup>
+      <span class="text-xs text-muted-foreground">
+        单圈
+        <span class="font-mono font-semibold text-foreground">{{ formatDuration(cycle.singleLoopTotalDuration.value) }}</span>
+        · 总计
+        <span class="font-mono font-semibold text-foreground">
+          {{ formatDuration(cycle.singleLoopTotalDuration.value * cycle.totalLoops.value) }}
+        </span>
+      </span>
+
+      <Button
+        v-if="cycle.isIdle.value"
+        size="sm"
+        variant="ghost"
+        class="ml-auto text-muted-foreground"
+        title="恢复初始的正反转标准步骤"
+        @click="handleResetToDefault"
+      >
+        <RotateCcwIcon data-icon="inline-start" />
+        <span>恢复默认</span>
+      </Button>
+    </div>
 
     <!-- 运行状态：当前工况三项大读数 + 本步进度 + 总进度 -->
     <section
@@ -300,12 +307,12 @@ const autoJudgeDetail = computed(() =>
     </Alert>
 
     <!-- 步骤配置序列列表 -->
-    <div class="flex flex-col gap-2 flex-1">
+    <div class="flex min-h-0 flex-1 flex-col gap-2">
       <div class="flex items-center justify-between">
         <div class="flex items-center gap-2">
           <span class="text-xs font-semibold text-muted-foreground">步骤序列</span>
           <span class="text-[11px] text-muted-foreground font-mono">
-            (共 {{ cycle.steps.value.length }} 步 · 单圈 {{ cycle.singleLoopTotalDuration.value }}s)
+            (共 {{ cycle.steps.value.length }} 步)
           </span>
         </div>
 
@@ -322,24 +329,26 @@ const autoJudgeDetail = computed(() =>
       </div>
 
       <!-- 列标签表头 (与每一步单行输入严格对齐) -->
-      <div class="flex items-center gap-1.5 px-2 text-[11px] font-semibold text-muted-foreground select-none">
-        <span class="w-5 shrink-0" aria-hidden="true"></span>
-        <span class="min-w-20 flex-1">步骤名称</span>
-        <span class="w-22 shrink-0">挡位</span>
-        <span class="w-25 shrink-0">目标转速</span>
-        <span class="w-17 shrink-0 text-center">时长</span>
-        <span class="w-7 shrink-0"></span>
+      <div :class="cn(STEP_GRID, 'px-2 text-[11px] font-semibold text-muted-foreground select-none')">
+        <span aria-hidden="true"></span>
+        <span>步骤名称</span>
+        <span>挡位</span>
+        <span>目标转速</span>
+        <span>时长</span>
+        <span aria-hidden="true"></span>
       </div>
 
       <!-- 步骤单行滚动容器 -->
-      <ScrollArea class="h-[185px] pr-2 rounded-lg border border-border/60 bg-muted/10 p-1.5">
+      <!-- 步骤列表填满左侧剩余高度（与右侧卡片等高时多出的空间用来多显示几步），最少 185 px；basis-0 使它不反过来撑高页面 -->
+      <ScrollArea class="min-h-[185px] flex-1 basis-0 pr-2 rounded-lg border border-border/60 bg-muted/10 p-1.5">
         <div ref="stepListEl" class="flex flex-col gap-1.5">
           <div
             v-for="(step, index) in cycle.steps.value"
             :key="step.id"
             :data-step-index="index"
             :class="cn(
-              'px-2 py-1.5 rounded-lg border transition-all flex items-center gap-1.5',
+              STEP_GRID,
+              'px-2 py-1.5 rounded-lg border transition-all',
               cycle.isRunning.value && cycle.currentStepIndex.value === index
                 ? 'border-primary bg-primary/5 ring-1 ring-primary/40'
                 : 'border-border/60 bg-background/80 hover:border-border',
@@ -357,7 +366,7 @@ const autoJudgeDetail = computed(() =>
             <Input
               v-model="step.name"
               placeholder="名称"
-              class="h-7 min-w-20 flex-1 px-2 text-xs"
+              class="h-7 w-full min-w-0 px-2 text-xs"
               :disabled="cycle.isRunning.value || cycle.isPaused.value"
             />
 
@@ -367,7 +376,7 @@ const autoJudgeDetail = computed(() =>
               :disabled="cycle.isRunning.value || cycle.isPaused.value"
               @update:model-value="(val) => handleGearChange(step, val)"
             >
-              <SelectTrigger class="h-7 w-22 px-2 text-xs">
+              <SelectTrigger class="h-7 w-full min-w-0 px-2 text-xs">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent position="popper" side="bottom" align="end">
@@ -380,7 +389,7 @@ const autoJudgeDetail = computed(() =>
             </Select>
 
             <!-- 目标转速 -->
-              <InputGroup class="w-28 shrink-0">
+            <InputGroup class="h-7 min-w-0">
               <InputGroupInput
                 v-model.number="step.targetSpeed"
                 type="number"
@@ -395,7 +404,7 @@ const autoJudgeDetail = computed(() =>
             </InputGroup>
 
             <!-- 持续时间 -->
-            <InputGroup class="w-17 shrink-0">
+            <InputGroup class="h-7 min-w-0">
               <InputGroupInput
                 v-model.number="step.durationSeconds"
                 type="number"
@@ -437,7 +446,7 @@ const autoJudgeDetail = computed(() =>
         >
           <Spinner v-if="axleStore.cycleLoading || cycle.isAutoJudging.value" data-icon="inline-start" />
           <PlayIcon v-else data-icon="inline-start" />
-          <span>{{ axleStore.cycleLoading ? '正在启动' : '开始工况测试' }}</span>
+          <span>{{ axleStore.cycleLoading ? '正在启动' : '开始自动试车' }}</span>
         </Button>
       </template>
 
