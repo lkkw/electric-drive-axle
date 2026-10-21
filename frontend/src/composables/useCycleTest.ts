@@ -15,10 +15,11 @@ export interface CycleStep {
 /**
  * 默认工况：正转 1000 / 2000 / 3000 → N 缓冲 → 反转 1000 / 2000 / 3000 → N 缓冲。
  * 反转由 R 挡决定方向，目标转速填正值（后端拒绝负转速）。
- * 从 3000 RPM 换向前留 10 s 缓冲让电机降速；末尾的缓冲用于多圈时反转接回正转。
+ * 后端按 200 RPM/s 斜坡降速（减少回馈能量、防母线过压），3000 RPM 降到 0 约 15 s，
+ * 换向缓冲留 20 s 保证电机停稳后再反向；末尾的缓冲用于多圈时反转接回正转。
  */
 const RUN_STEP_SECONDS = 60
-const NEUTRAL_BUFFER_SECONDS = 10
+const NEUTRAL_BUFFER_SECONDS = 20
 
 export const DEFAULT_CYCLE_STEPS: readonly CycleStep[] = [
   { id: 'step-1', name: '正转 1000', gear: 1, targetSpeed: 1000, durationSeconds: RUN_STEP_SECONDS },

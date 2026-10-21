@@ -99,6 +99,14 @@ SOFT_STOP_POLL_SECONDS = 0.05
 # 手动下电前，电机仍在转时等待停稳的最长时间；超时照常下电并在结果中提示。
 POWER_OFF_MOTOR_STOP_TIMEOUT_SECONDS = 10.0
 
+# 速度模式斜坡：实际下发的转速以限定速率逼近目标，避免急减速时电机回馈能量把母线电压
+# 顶到过压（实测 1000 RPM 直接降到 0 时母线由 345 V 冲到 517 V，报 MCU_139）。
+# 台架电源不能吸收回馈电流，降速越慢、回馈功率越小。
+SPEED_RAMP_DECEL_RPM_PER_S = 200.0
+SPEED_RAMP_ACCEL_RPM_PER_S = 500.0
+# 发送循环偶发卡顿时的单拍最长步长，避免一次跳变过大
+SPEED_RAMP_MAX_DT_SECONDS = 0.05
+
 SAFETY_METRIC_LABELS: dict[SafetyMetric, str] = {
     "motor_speed": "实际转速",
     "motor_torque": "实际转矩",
@@ -180,6 +188,8 @@ class AxleManager:
         # 当前这台电驱桥的试车统计（试车记录用），操作员判定后清零
         self.test_session = TestSession()
         self._manual_judging = False  # 操作员手动判定进行中：期间不允许启动循环测试
+        # 速度斜坡：当前实际下发的带符号转速（D 为正、R 为负）；未使能或非速度模式时为 None
+        self._ramp_speed: float | None = None
 
         # 通信统计
         self._connected: bool = False
@@ -560,6 +570,51 @@ class AxleManager:
     # ------------------------------------------------------------------
     # 控制命令与循环测试
     # ------------------------------------------------------------------
+    def _slew_speed_locked(
+        self, speed_req: int, gear: int, mode: int, en: int, dt: float
+    ) -> tuple[int, int]:
+        """速度斜坡：返回本拍实际下发的 (转速, 挡位)。
+
+        - 只在已使能的速度模式下生效；未使能（电机自由滑行、无回馈）或转矩模式直接透传，
+          并清空斜坡状态，下次使能时从 0x35B 反馈的实际转速起步，避免使能瞬间急刹；
+        - 以带符号转速计算：D 挡为正、R 挡为负、N 挡为 0；
+        - 减速（含换向前先降到 0）按 SPEED_RAMP_DECEL_RPM_PER_S，加速按 SPEED_RAMP_ACCEL_RPM_PER_S；
+        - 电机仍在转时保持当前转向对应的挡位，降到 0 后才发送目标挡位（如 N）。
+        """
+        if en != 1 or mode != 3:
+            self._ramp_speed = None
+            return speed_req, gear
+
+        target = float(speed_req if gear == 1 else -speed_req if gear == 2 else 0)
+        current = self._ramp_speed
+        if current is None:
+            current = 0.0
+            received_at = self._mcu_2_last_rx_timestamp
+            if (
+                received_at is not None
+                and time.time() - received_at <= MCU_2_SAFETY_FRESHNESS_SECONDS
+            ):
+                current = float(self._mcu_2.mcu_act_motor_spd)
+
+        if current != target:
+            reversing = current * target < 0
+            decelerating = reversing or abs(target) < abs(current)
+            goal = 0.0 if reversing else target
+            rate = SPEED_RAMP_DECEL_RPM_PER_S if decelerating else SPEED_RAMP_ACCEL_RPM_PER_S
+            step = rate * max(0.0, min(dt, SPEED_RAMP_MAX_DT_SECONDS))
+            if abs(goal - current) <= step:
+                current = goal
+            else:
+                current += math.copysign(step, goal - current)
+        self._ramp_speed = current
+
+        sent = round(current)
+        if sent > 0:
+            return sent, 1
+        if sent < 0:
+            return -sent, 2
+        return 0, gear
+
     def _set_safe_command_locked(self) -> None:
         """在状态锁内写入统一的停机命令快照。"""
         self._command.torque_req = 0.0
@@ -1530,7 +1585,11 @@ class AxleManager:
         with windows_high_resolution_timer():
             try:
                 next_tick = time.perf_counter()
+                last_ramp_at = next_tick
                 while self._is_transmitting:
+                    ramp_now = time.perf_counter()
+                    ramp_dt = ramp_now - last_ramp_at
+                    last_ramp_at = ramp_now
                     # 1. 在锁保护下直接读取标量字段并自增 Life（避免 Pydantic 序列化开销）
                     async with self._lock:
                         self._command.life = (self._command.life + 1) % 16
@@ -1548,6 +1607,8 @@ class AxleManager:
                             and en == 0
                             and gear == 3
                         )
+                        # 速度模式下按斜坡逼近目标转速，减少急减速时的回馈能量
+                        spd, gear = self._slew_speed_locked(spd, gear, mode, en, ramp_dt)
 
                     # 2. 纯 Python 位运算编码。手刹、制动、ABS、加速踏板与主动放电为整车信号，
                     # 空载台架上固定按无效值 (0) 发送。
