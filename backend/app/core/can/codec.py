@@ -29,7 +29,7 @@ class McuDriveMotor1Data:
     mcu_flt_code: int  # MCU故障代码, 范围 [0, 250]
     mcu_flt_levl: int  # MCU故障等级 (0: 无故障, 1~4: 一至四级故障)
     mcu_life_1: int  # MCU_Life_1 循环计数器 [0, 15]
-    mcu_tbox_flt_levl: int  # MCU温度故障等级 (0: 正常, 1: 一级, 2: 二级限功, 3: 三级下高压)
+    mcu_tbox_flt_levl: int  # 报警等级，上报 T-Box (0: 无, 1: 一级, 2: 二级限功, 3: 三级下高压)
 
 
 @dataclass(slots=True, frozen=True)
@@ -178,7 +178,7 @@ def decode_mcu_motor_1(data: bytes | bytearray | list[int]) -> McuDriveMotor1Dat
     flt_levl = data[6] & 0x07
     life_1 = (data[6] >> 3) & 0x0F
 
-    # Byte 7: TBOX故障等级 (bits 0..1)
+    # Byte 7: 报警等级 MCU_TBOX_FltLevl (bits 0..1)
     tbox_flt_levl = data[7] & 0x03
 
     return McuDriveMotor1Data(

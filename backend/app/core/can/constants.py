@@ -125,7 +125,7 @@ class McuFaultLevel(IntEnum):
 
 
 class McuTboxFaultLevel(IntEnum):
-    """MCU 温度故障等级 (MCU_TBOX_FltLevl)."""
+    """MCU 报警等级 (MCU_TBOX_FltLevl)：上报 T-Box 的整体报警等级，不是温度专用。"""
 
     NO_FAULT = 0  # 无故障
     LEVEL_1 = 1  # 一级故障（最轻微）

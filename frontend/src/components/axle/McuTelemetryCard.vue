@@ -155,7 +155,7 @@ const metricTiles = computed<MetricTile[]>(() => [
             {{ FAULT_LEVEL_MAP[mcu1.mcu_flt_levl]?.text ?? '故障报警' }}
           </Badge>
           <Badge v-if="hasFreshMcu1 && mcu1.mcu_tbox_flt_levl !== 0" variant="destructive">
-            {{ TBOX_FAULT_LEVEL_MAP[mcu1.mcu_tbox_flt_levl] ?? '温度报警' }}
+            {{ TBOX_FAULT_LEVEL_MAP[mcu1.mcu_tbox_flt_levl] ?? '报警' }}
           </Badge>
           <Badge v-if="hasOverTemperature" variant="destructive">过温故障</Badge>
           <FaultCodeDialog v-model:open="faultDialogOpen" :current-flt-code="mcu1.mcu_flt_code" />

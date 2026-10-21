@@ -149,7 +149,7 @@ class McuDriveMotor1Telemetry(BaseModel):
     mcu_flt_code: int = 0  # 故障代码
     mcu_flt_levl: int = 0  # 故障等级
     mcu_life_1: int = 0  # 循环计数器
-    mcu_tbox_flt_levl: int = 0  # 温度故障等级
+    mcu_tbox_flt_levl: int = 0  # 报警等级（上报 T-Box）
 
 
 class McuDriveMotor2Telemetry(BaseModel):

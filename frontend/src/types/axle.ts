@@ -209,11 +209,12 @@ export const FAULT_LEVEL_MAP: Record<number, { text: string }> = {
   4: { text: '四级故障(致命)' },
 }
 
+/** 0x35A 字节 7 MCU_TBOX_FltLevl：上报 T-Box 的整体报警等级（不是温度专用） */
 export const TBOX_FAULT_LEVEL_MAP: Record<number, string> = {
-  0: '温度正常',
-  1: '温度一级故障',
-  2: '温度故障（限功）',
-  3: '温度故障（下高压）',
+  0: '无报警',
+  1: '一级报警',
+  2: '二级报警（限功）',
+  3: '三级报警（下高压）',
 }
 
 /** 安全配置保存生效记录快照 */
