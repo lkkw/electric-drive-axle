@@ -90,7 +90,7 @@ const powerBadge = computed<{ label: string; variant: BadgeVariant }>(() => {
 const feedbackRows = computed<StatusRow[]>(() => {
   const s = status.value
   if (!s.connected || !s.communication_ok) {
-    return ['安全回路 (Safe)', '上电请求', '上电完成', '主接触器'].map((label) => ({
+    return ['安全回路', '上电请求', '上电完成', '主接触器'].map((label) => ({
       label,
       value: '未知',
       variant: 'secondary' as const,
@@ -98,7 +98,7 @@ const feedbackRows = computed<StatusRow[]>(() => {
   }
   return [
     {
-      label: '安全回路 (Safe)',
+      label: '安全回路',
       value: s.safe ? '闭合' : '断开',
       variant: s.safe ? 'success' : 'destructive',
     },
@@ -126,12 +126,12 @@ const readingRows = computed<StatusRow[]>(() => {
   const productMismatch = known && s.power_on && s.product_type_feedback !== s.product_type_expected
   return [
     {
-      label: `输出电压（目标 ${s.target_voltage} V）`,
+      label: '输出电压',
       value: known ? `${s.output_voltage} V` : '--',
     },
     { label: '输出电流', value: known ? String(s.output_current) : '--' },
     {
-      label: `产品编号反馈（应为 ${s.product_type_expected}）`,
+      label: '产品编号反馈',
       value: known ? String(s.product_type_feedback) : '--',
       variant: productMismatch ? 'destructive' : undefined,
     },
@@ -378,7 +378,7 @@ onMounted(async () => {
         <Button class="h-10" :disabled="!canPowerOn" @click="openConfirm('power-on')">
           <Spinner v-if="plc.pending['power-on']" data-icon="inline-start" />
           <PowerIcon v-else data-icon="inline-start" />
-          {{ plc.pending['power-on'] ? '上电中（最长 30 s）…' : 'PLC 上电' }}
+          {{ plc.pending['power-on'] ? '上电中（最长 30 s）…' : 'PLC 自动上电' }}
         </Button>
         <Button
           variant="outline"

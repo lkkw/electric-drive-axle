@@ -126,8 +126,17 @@ onBeforeUnmount(() => {
     <CardHeader class="border-b pb-3">
       <div class="flex flex-wrap items-center justify-between gap-2">
         <CardTitle>PLC 通信监视</CardTitle>
-        <Badge :variant="plcOnline ? 'success' : 'secondary'">
-          {{ plcOnline ? `已采样 ${snapshot?.updated_at}` : 'PLC 未连接，暂无数据' }}
+        <!-- 采样时间每秒刷新，属于常态信息：描边徽章 + 小绿点，不用实心底色 -->
+        <Badge variant="outline" class="gap-1.5 font-normal text-muted-foreground">
+          <span
+            class="size-1.5 rounded-full"
+            :class="plcOnline ? 'bg-success' : 'bg-muted-foreground/40'"
+            aria-hidden="true"
+          />
+          <span v-if="plcOnline">
+            已采样 <span class="font-mono tabular-nums text-foreground">{{ snapshot?.updated_at }}</span>
+          </span>
+          <span v-else>PLC 未连接，暂无数据</span>
         </Badge>
       </div>
     </CardHeader>
