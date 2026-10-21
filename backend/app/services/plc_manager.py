@@ -5,15 +5,19 @@
 - 上电：确认 Safe=1 → 一次写入 22 字节控制区（Request_power=1、产品编号 1、
   电压 340 V，其余清零）→ 每 0.2 s 轮询，最长 30 s 等到 Power_on=1 且 Connect=1；
   超时由后端自己复位 Request_power。
-- 下电：先关闭电机使能 → Request_power=0 → 最长 5 s 确认 Power_on、Connect 均为 0。
+- 下电：先关闭电机使能（电机仍在转时最多等 10 s 停稳）→ Request_power=0 →
+  最长 5 s 确认 Power_on、Connect 均为 0。
 - 常驻监视（0.2 s）：已请求上电或已通电时 Safe=0 → 复位 Request_power 并触发急停。
 - 心跳：每秒翻转上位机心跳，检测 PLC 心跳跳变；只用于显示。
 - MES 上传：常驻监视中把电机实际转速 (rpm)、电机温度 (℃) 写入 Speed / Temp，
   与 PLC 中的值不同时才写；CAN 未连接或反馈过期时写 0。
 - 反向联动：电驱桥急停或 CAN 链路故障时，立即复位 Request_power 切断高压。
+- PLC 读写全部在一个专用单线程里按提交顺序执行：调用超时后已提交的写入仍会执行，
+  但一定排在随后提交的复位之前，不会出现“复位先写、迟到的上电请求后写”。
 """
 
 import asyncio
+import concurrent.futures
 import logging
 import math
 import os
@@ -68,7 +72,7 @@ LOG_THROTTLE_SECONDS = 5.0
 
 ClientFactory = Callable[[PlcConfig], StationClient]
 SafetyTripHook = Callable[[str], Awaitable[None]]
-BeforePowerOffHook = Callable[[], Awaitable[None]]
+BeforePowerOffHook = Callable[[], Awaitable[str | None]]  # 返回需要提示操作员的问题
 PowerOnBlocker = Callable[[], str | None]
 MesTelemetrySource = Callable[[], tuple[float, float]]
 
@@ -80,6 +84,11 @@ class PlcOperationError(Exception):
         super().__init__(message)
         self.status_code = status_code
         self.message = message
+
+
+def _consume_exception(future: asyncio.Future[Any]) -> None:
+    if not future.cancelled() and future.exception() is not None:
+        logger.debug("PLC 调用在等待方离开后失败: %s", future.exception())
 
 
 def default_client_factory(config: PlcConfig) -> StationClient:
@@ -120,6 +129,7 @@ class PlcPowerManager:
         power_on_timeout_s: float = POWER_ON_TIMEOUT_SECONDS,
         power_off_timeout_s: float = POWER_OFF_TIMEOUT_SECONDS,
         poll_interval_s: float = STATUS_POLL_SECONDS,
+        io_timeout_s: float = IO_TIMEOUT_SECONDS,
     ) -> None:
         self._config_path = config_path
         self._config = load_plc_config(config_path)
@@ -127,6 +137,14 @@ class PlcPowerManager:
         self._power_on_timeout_s = power_on_timeout_s
         self._power_off_timeout_s = power_off_timeout_s
         self._poll_interval_s = poll_interval_s
+        self._io_timeout_s = io_timeout_s
+
+        # snap7 Client 不支持并发；单线程执行器同时保证读写按提交顺序生效
+        self._executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="plc_io"
+        )
+        # 已超时但仍在执行器里没结束的调用数；大于 0 时常驻监视不再追加读取
+        self._stalled_calls = 0
 
         self._client: StationClient | None = None
         self._connected = False
@@ -186,12 +204,27 @@ class PlcPowerManager:
     # 底层读写
     # ------------------------------------------------------------------
     async def _io(
-        self, func: Callable[..., Any], *args: Any, limit_seconds: float = IO_TIMEOUT_SECONDS
+        self, func: Callable[..., Any], *args: Any, limit_seconds: float | None = None
     ) -> Any:
+        """在 PLC 专用线程中执行一次调用。
+
+        超时只结束等待，不取消调用：已排队的写入照常按顺序执行，保证后提交的
+        复位一定在其后生效。超时调用结束前计入 ``_stalled_calls``。
+        """
+        if limit_seconds is None:
+            limit_seconds = self._io_timeout_s
+        future = asyncio.get_running_loop().run_in_executor(self._executor, func, *args)
+        # 等待方超时或被取消后没人再取结果：取走异常，避免“exception was never retrieved”
+        future.add_done_callback(_consume_exception)
         try:
-            return await asyncio.wait_for(asyncio.to_thread(func, *args), timeout=limit_seconds)
+            return await asyncio.wait_for(asyncio.shield(future), timeout=limit_seconds)
         except TimeoutError as err:
+            self._stalled_calls += 1
+            future.add_done_callback(self._on_stalled_call_done)
             raise PlcClientError(f"PLC 读写超时（{limit_seconds:g}s）") from err
+
+    def _on_stalled_call_done(self, _future: asyncio.Future[Any]) -> None:
+        self._stalled_calls -= 1
 
     def _require_client(self) -> StationClient:
         if not self._connected or self._client is None:
@@ -270,14 +303,17 @@ class PlcPowerManager:
     # ------------------------------------------------------------------
     async def connect(self, config: PlcConfig) -> PlcStatus:
         async with self._connection_lock:
-            if self._connected and self._feedback is not None and self._feedback.supply_active:
-                raise PlcOperationError(409, "台架仍在供电，请先下电再切换 PLC 连接")
+            await self._prepare_release_locked(
+                "切换 PLC 连接", "台架仍在供电，请先下电再切换 PLC 连接"
+            )
             await self._disconnect_locked()
 
             client = self._client_factory(config)
             try:
                 await self._io(client.connect, limit_seconds=CONNECT_TIMEOUT_SECONDS)
             except PlcClientError as err:
+                # 连接超时后仍可能在后台连上：排一次断开在它后面，不留下孤立连接
+                self._executor.submit(client.disconnect)
                 raise PlcOperationError(502, str(err)) from err
 
             self._config = config.model_copy()
@@ -307,17 +343,38 @@ class PlcPowerManager:
 
     async def disconnect(self) -> PlcStatus:
         async with self._connection_lock:
-            if self._connected and self._feedback is not None and self._feedback.supply_active:
-                raise PlcOperationError(
-                    409, "台架仍在供电（已请求上电或接触器吸合），请先下电再断开 PLC"
-                )
+            await self._prepare_release_locked(
+                "断开 PLC", "台架仍在供电（已请求上电或接触器吸合），请先下电再断开 PLC"
+            )
             was_connected = self._connected
             await self._disconnect_locked()
         if was_connected:
             events.info("PLC 已断开")
         return self.status()
 
+    async def _prepare_release_locked(self, action: str, powered_message: str) -> None:
+        """断开 / 切换连接前的检查。
+
+        - 通讯正常且仍在供电：拒绝，要求先下电；
+        - 通讯已中断：无法确认供电状态，尽力复位上电请求后放行，以便重新连接恢复监视；
+        - 上电 / 下电进行中：拒绝，避免关掉连接后留下上电请求无人复位。
+          放在最后检查，且与随后的 _disconnect_locked 之间没有 await。
+        """
+        if not self._connected:
+            return
+        if self.status().communication_ok:
+            if self._feedback is not None and self._feedback.supply_active:
+                raise PlcOperationError(409, powered_message)
+        elif self._feedback is not None and self._feedback.supply_active:
+            self._abort_power_on = True
+            await self._reset_request_power_quietly(f"通讯中断时{action}")
+            events.warning("PLC 通讯中断，%s前已尝试复位上电请求，请现场确认高压已断开", action)
+        if self._operation_lock.locked():
+            raise PlcOperationError(409, f"PLC 正在执行上电或下电，请完成后再{action}")
+
     async def _disconnect_locked(self) -> None:
+        # 先标记断开：之后新的上电 / 下电会在 _require_client 处直接拒绝
+        self._connected = False
         task, self._monitor_task = self._monitor_task, None
         if task is not None:
             task.cancel()
@@ -362,6 +419,11 @@ class PlcPowerManager:
             await asyncio.sleep(max(0.0, self._poll_interval_s - (time.monotonic() - started)))
 
     async def _monitor_step(self) -> None:
+        if self._stalled_calls:
+            # 上一次调用还卡在 PLC 线程里：不再追加读取，避免网络中断时请求越排越多。
+            # 反馈随之过期，状态显示通信中断。
+            self._log_throttled("stalled", "PLC 读写无响应，暂停常驻读取直到上一次调用结束")
+            return
         try:
             feedback = await self._refresh()
         except PlcClientError as err:
@@ -458,6 +520,8 @@ class PlcPowerManager:
             raise PlcOperationError(409, "PLC 正在执行上电或下电，请勿重复提交")
         async with self._operation_lock:
             self._require_client()
+            # 取得锁后立即清除中止标记：此后到达的下电 / 急停不会被覆盖
+            self._abort_power_on = False
             if self._power_on_blocker is not None:
                 reason = self._power_on_blocker()
                 if reason:
@@ -471,10 +535,11 @@ class PlcPowerManager:
             if feedback.power_on and feedback.connect:
                 return self._result("success", "台架已处于上电状态")
 
-            self._abort_power_on = False
             self._operation = "powering_on"
             succeeded = False
             try:
+                if self._abort_power_on:
+                    raise PlcOperationError(409, "上电已中止（收到下电、急停或安全回路断开）")
                 try:
                     await self._update(
                         OFFSET_PC_STATUS,
@@ -532,9 +597,12 @@ class PlcPowerManager:
                 issues: list[str] = []
                 if self._before_power_off is not None:
                     try:
-                        await self._before_power_off()
+                        note = await self._before_power_off()
                     except Exception as err:
                         issues.append(f"关闭电机使能未确认: {err}")
+                    else:
+                        if note:
+                            issues.append(note)
 
                 try:
                     await self._write_bit(BIT_REQUEST_POWER, False, "下电")

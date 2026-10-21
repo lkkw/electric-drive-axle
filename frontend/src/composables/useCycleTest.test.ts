@@ -15,19 +15,31 @@ describe('useCycleTest composable', () => {
     vi.useRealTimers()
   })
 
-  it('初始状态为 idle 并默认装载标准正反转出厂步骤', () => {
+  it('初始状态为 idle 并默认装载正转 1000/2000/3000、反转 1000/2000/3000 工况', () => {
     const cycle = useCycleTest()
     expect(cycle.status.value).toBe('idle')
-    expect(cycle.steps.value.length).toBe(4)
-    expect(cycle.steps.value[0].gear).toBe(1) // D
-    expect(cycle.steps.value[0].targetSpeed).toBe(1000)
-    expect(cycle.steps.value[1].gear).toBe(3) // N 换向缓冲
-    expect(cycle.steps.value[1].targetSpeed).toBe(0)
-    expect(cycle.steps.value[2].gear).toBe(2) // R
-    expect(cycle.steps.value[2].targetSpeed).toBe(1000)
-    expect(cycle.steps.value[3].gear).toBe(3) // N 换向缓冲
-    expect(cycle.steps.value[3].targetSpeed).toBe(0)
+    expect(cycle.steps.value.map((step) => [step.gear, step.targetSpeed])).toEqual([
+      [1, 1000],
+      [1, 2000],
+      [1, 3000],
+      [3, 0], // N 换向缓冲
+      [2, 1000],
+      [2, 2000],
+      [2, 3000],
+      [3, 0], // N 换向缓冲（多圈时反转接回正转）
+    ])
     expect(cycle.totalLoops.value).toBe(1)
+  })
+
+  it('默认工况多圈运行也满足正反转之间必须有 N 挡缓冲', async () => {
+    const store = useAxleStore()
+    store.telemetry.connected = true
+    const runCycleSpy = vi.spyOn(store, 'runCycleTest').mockResolvedValue(undefined)
+    const cycle = useCycleTest()
+    cycle.totalLoops.value = 3
+
+    await cycle.startTest()
+    expect(runCycleSpy).toHaveBeenCalledOnce()
   })
 
   it('支持自定义修改工况步骤与重置状态', () => {

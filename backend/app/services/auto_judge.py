@@ -67,14 +67,14 @@ def evaluate_cycle(cycle: CycleTestStatus, session: TestSessionStats) -> tuple[T
     """按自动判定规则得出结论与备注（备注写入试车记录）。"""
     reasons: list[str] = []
     if cycle.status != "completed":
-        reasons.append(f"循环测试未正常完成（{cycle.last_error or '异常中断'}）")
+        reasons.append(f"自动控制未正常完成（{cycle.last_error or '异常中断'}）")
     if session.fault_codes:
         reasons.append(f"出现故障码 {', '.join(session.fault_codes)}")
     if session.safety_trips:
         reasons.append(f"触发自动安全停机 {session.safety_trips} 次")
     if reasons:
         return 2, "自动判定 NG：" + "；".join(reasons)
-    return 1, f"自动判定合格：循环测试 {cycle.total_loops} 圈正常完成，无故障码、无急停"
+    return 1, f"自动判定合格：自动控制 {cycle.total_loops} 圈正常完成，无故障码、无急停"
 
 
 class CycleAutoJudge:
@@ -109,11 +109,11 @@ class CycleAutoJudge:
                 plc=self._plc,
                 store=self._store_factory(),
             )
-            events.info("循环测试自动判定: %s", remark)
+            events.info("自动控制结束后自动判定: %s", remark)
             notes.insert(0, f"{remark}。{response.message}")
         except Exception as err:
-            logger.exception("循环测试自动判定失败: %s", err)
-            events.error("循环测试自动判定失败: %s", err)
+            logger.exception("自动控制结束后自动判定失败: %s", err)
+            events.error("自动控制结束后自动判定失败: %s", err)
             notes.insert(0, f"自动判定失败（{err}），请手动判定")
 
         notes.append(await self._power_off())
@@ -128,10 +128,10 @@ class CycleAutoJudge:
         try:
             response = await self._plc.power_off()
         except PlcOperationError as err:
-            events.error("循环测试结束自动下电失败: %s", err.message)
+            events.error("自动控制结束自动下电失败: %s", err.message)
             return f"自动下电失败：{err.message}"
         except Exception as err:
-            logger.exception("循环测试结束自动下电失败: %s", err)
+            logger.exception("自动控制结束自动下电失败: %s", err)
             return f"自动下电失败：{err}"
-        events.info("循环测试结束自动下电: %s", response.message)
+        events.info("自动控制结束自动下电: %s", response.message)
         return f"自动下电：{response.message}"

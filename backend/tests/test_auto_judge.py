@@ -7,6 +7,9 @@ import struct
 import time
 from pathlib import Path
 
+import pytest
+
+from app.core.can.driver import CanDriverError
 from app.core.plc.client import SimulatedStationClient
 from app.schemas import test_records as record_schemas
 from app.schemas.axle import (
@@ -182,3 +185,23 @@ def test_evaluate_cycle_rules() -> None:
     aborted = CycleTestStatus(status="error", last_error="CAN 链路故障")
     result, remark = evaluate_cycle(aborted, record_schemas.TestSessionStats())
     assert result == 2 and "CAN 链路故障" in remark
+
+
+def test_manual_judge_excludes_cycle_start_and_duplicate_submit(tmp_path: Path) -> None:
+    async def run_test() -> None:
+        bench = Bench(tmp_path)
+        await bench.start()
+        try:
+            assert bench.axle.begin_manual_judge() is None
+            # 判定保存期间：重复提交与启动循环都被拒绝，避免新一轮统计被判定清零
+            assert bench.axle.begin_manual_judge() is not None
+            with pytest.raises(CanDriverError, match="试车判定"):
+                await bench.axle.start_cycle_test(ONE_STEP_CYCLE)
+            bench.axle.end_manual_judge()
+
+            await bench.axle.start_cycle_test(ONE_STEP_CYCLE)
+            await bench.wait_judged()
+        finally:
+            await bench.close()
+
+    asyncio.run(run_test())

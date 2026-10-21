@@ -1,14 +1,27 @@
 """PLC 自动上电 / 下电、Safe 联锁、心跳与电驱桥联动（使用仿真 PLC）。"""
 
 import asyncio
+import socket
 import struct
+import threading
+import time
+from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+import snap7
+from snap7.type import Parameter
 
-from app.core.plc.client import SimulatedStationClient
+from app.core.plc.client import (
+    PlcClientError,
+    SimulatedStationClient,
+    apply_io_timeout,
+)
+from app.core.plc.points import POWER_ON_BLOCK_SIZE
 from app.schemas.axle import CanConnectRequest, VcuCommandUpdateRequest
 from app.schemas.plc import PlcConfig
+from app.services import plc_manager as plc_manager_module
 from app.services.axle_manager import AxleManager
 from app.services.plc_manager import PlcOperationError, PlcPowerManager
 from tests.test_axle_manager import create_mock_driver
@@ -42,6 +55,7 @@ def make_manager(
     *,
     config_path: Path | None = None,
     power_on_timeout_s: float = 0.6,
+    io_timeout_s: float = 2.0,
 ) -> tuple[PlcPowerManager, SimulatedStationClient, FakeAxle]:
     sim = sim or SimulatedStationClient(power_on_delay_s=0.05, power_off_delay_s=0.05)
     manager = PlcPowerManager(
@@ -50,6 +64,7 @@ def make_manager(
         power_on_timeout_s=power_on_timeout_s,
         power_off_timeout_s=0.4,
         poll_interval_s=0.02,
+        io_timeout_s=io_timeout_s,
     )
     axle = FakeAxle()
     manager.bind_axle(
@@ -380,3 +395,235 @@ def test_power_on_blocked_while_motor_enabled_and_power_off_disables_first() -> 
             await manager.shutdown()
 
     asyncio.run(run_test())
+
+
+def test_disconnect_refused_while_power_on_in_progress() -> None:
+    async def run_test() -> None:
+        sim = SimulatedStationClient(power_on_delay_s=5.0, power_off_delay_s=0.05)
+        manager, _, _ = make_manager(sim, power_on_timeout_s=5.0)
+        await manager.connect(SIM_CONFIG)
+        try:
+            on_task = asyncio.create_task(manager.power_on())
+            await asyncio.sleep(0.01)  # 已写入上电请求，缓存反馈可能还没刷新
+            with pytest.raises(PlcOperationError, match="正在执行上电"):
+                await manager.disconnect()
+            with pytest.raises(PlcOperationError, match="正在执行上电"):
+                await manager.connect(SIM_CONFIG)
+            assert manager.status().connected
+
+            await manager.power_off()
+            with pytest.raises(PlcOperationError):
+                await on_task
+            assert not request_power_bit(sim)
+        finally:
+            await manager.shutdown()
+
+    asyncio.run(run_test())
+
+
+def test_disconnect_allowed_after_communication_lost_while_powered() -> None:
+    async def run_test() -> None:
+        manager, sim, _ = make_manager()
+        await manager.connect(SIM_CONFIG)
+        try:
+            await manager.power_on()
+
+            def broken(*_args: object) -> bytearray:
+                raise PlcClientError("模拟网线断开")
+
+            sim.read_station = broken  # type: ignore[method-assign]
+            sim.update = broken  # type: ignore[method-assign]
+            await asyncio.sleep(1.2)  # 反馈过期
+            assert not manager.status().communication_ok
+
+            # 通讯中断时不能被“仍在供电”的旧反馈锁死，否则无法重连恢复监视
+            await manager.disconnect()
+            assert not manager.status().connected
+
+            del sim.read_station, sim.update
+            await manager.connect(SIM_CONFIG)
+            assert manager.status().communication_ok
+            assert manager.status().power_state == "powered"
+        finally:
+            await manager.power_off()
+            await manager.shutdown()
+
+    asyncio.run(run_test())
+
+
+def test_power_off_reports_motor_still_spinning() -> None:
+    async def run_test() -> None:
+        manager, sim, fake = make_manager()
+
+        async def still_spinning() -> str | None:
+            return "等待 10 s 电机仍未停稳（800 rpm）"
+
+        manager._before_power_off = still_spinning
+        await manager.connect(SIM_CONFIG)
+        try:
+            await manager.power_on()
+            result = await manager.power_off()
+            assert result.status == "partial"
+            assert "已下电" in result.message and "未停稳" in result.message
+            assert not request_power_bit(sim)
+        finally:
+            await manager.shutdown()
+
+    asyncio.run(run_test())
+
+
+def test_axle_power_off_waits_for_motor_stop_without_blocking() -> None:
+    async def run_test() -> None:
+        axle = AxleManager(driver=create_mock_driver())
+        await axle.connect(CanConnectRequest())
+        try:
+            # 没有转速反馈（控制器不在线）：不等待
+            started = time.monotonic()
+            assert await axle.disable_for_power_off(motor_stop_timeout_s=5.0) is None
+            assert time.monotonic() - started < 1.0
+
+            # 电机仍在转：等到超时后照常放行并给出提示
+            axle._mcu_2.mcu_act_motor_spd = 800
+            axle._mcu_2_last_rx_timestamp = time.time() + 10
+            note = await axle.disable_for_power_off(motor_stop_timeout_s=0.2)
+            assert note is not None and "800 rpm" in note
+
+            # 停稳后立即放行
+            axle._mcu_2.mcu_act_motor_spd = 0
+            assert await axle.disable_for_power_off(motor_stop_timeout_s=5.0) is None
+        finally:
+            await axle.disconnect()
+
+    asyncio.run(run_test())
+
+
+# ----------------------------------------------------------------------
+# PLC 调用超时：写入顺序、卡死时不堆积、snap7 收发超时
+# ----------------------------------------------------------------------
+async def wait_until(predicate: Callable[[], bool], timeout_s: float = 3.0) -> None:
+    deadline = time.monotonic() + timeout_s
+    while not predicate():
+        assert time.monotonic() < deadline, "等待条件超时"
+        await asyncio.sleep(0.01)
+
+
+async def drain_plc_thread(manager: PlcPowerManager) -> None:
+    """PLC 线程按提交顺序执行：排一个空调用并等它完成，之前提交的调用都已结束。"""
+    await manager._io(lambda: None, limit_seconds=5.0)
+
+
+class StallingSim(SimulatedStationClient):
+    """模拟 snap7 调用迟迟不返回：卡在拿到客户端锁之前，后续调用不会被这把锁排好序。"""
+
+    def __init__(self) -> None:
+        super().__init__(power_on_delay_s=0.05, power_off_delay_s=0.05)
+        self.release = threading.Event()
+        self.stall_power_on_write = False
+        self.stall_reads = False
+        self.read_calls = 0
+
+    def update(self, offset, size, transform):  # noqa: ANN001, ANN201
+        if self.stall_power_on_write and size == POWER_ON_BLOCK_SIZE:
+            self.stall_power_on_write = False
+            self.release.wait(5)
+        super().update(offset, size, transform)
+
+    def read_station(self) -> bytearray:
+        if self.stall_reads:
+            self.read_calls += 1
+            self.release.wait(5)
+        return super().read_station()
+
+
+def test_timed_out_power_on_write_cannot_override_later_reset() -> None:
+    """上电写入超时后仍会执行，但必须排在随后的复位之前，最终 Request_power=0。"""
+
+    async def run_test() -> None:
+        sim = StallingSim()
+        manager, _, _ = make_manager(sim, io_timeout_s=0.1)
+        await manager.connect(SIM_CONFIG)
+        try:
+            sim.stall_power_on_write = True
+            with pytest.raises(PlcOperationError, match="上电请求写入失败"):
+                await manager.power_on()
+
+            sim.release.set()  # 卡住的上电写入此时才真正写进 PLC
+            await drain_plc_thread(manager)
+            assert manager._stalled_calls == 0
+            assert not request_power_bit(sim)
+        finally:
+            sim.release.set()
+            await manager.shutdown()
+
+    asyncio.run(run_test())
+
+
+def test_monitor_does_not_pile_up_reads_while_plc_call_stalled() -> None:
+    async def run_test() -> None:
+        sim = StallingSim()
+        manager, _, _ = make_manager(sim, io_timeout_s=0.1)
+        await manager.connect(SIM_CONFIG)
+        try:
+            sim.stall_reads = True
+            await wait_until(lambda: manager._stalled_calls == 1)
+            await asyncio.sleep(0.5)  # 约 25 个监视周期
+            assert sim.read_calls == 1  # 只有卡住的那一次真正进了 PLC 线程
+            assert manager._executor._work_queue.qsize() == 0  # 没有排队的读取
+
+            sim.stall_reads = False
+            sim.release.set()
+            await wait_until(lambda: manager._stalled_calls == 0)
+            await wait_until(lambda: manager.status().communication_ok)  # 监视恢复
+        finally:
+            sim.release.set()
+            await manager.shutdown()
+
+    asyncio.run(run_test())
+
+
+def test_connect_timeout_queues_disconnect_after_late_connect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """连接超时后客户端仍可能在后台连上，随后排队的断开会把它关掉。"""
+
+    class SlowClient:
+        def __init__(self) -> None:
+            self.release = threading.Event()
+            self.calls: list[str] = []
+
+        def connect(self) -> None:
+            self.release.wait(5)
+            self.calls.append("connect")
+
+        def disconnect(self) -> None:
+            self.calls.append("disconnect")
+
+    async def run_test() -> None:
+        slow = SlowClient()
+        manager = PlcPowerManager(client_factory=lambda _config: slow)  # type: ignore[arg-type,return-value]
+        monkeypatch.setattr(plc_manager_module, "CONNECT_TIMEOUT_SECONDS", 0.1)
+        with pytest.raises(PlcOperationError, match="超时") as exc:
+            await manager.connect(PlcConfig(ip="192.168.8.1"))
+        assert exc.value.status_code == 502
+        assert not manager.status().connected
+
+        slow.release.set()
+        await drain_plc_thread(manager)
+        assert slow.calls == ["connect", "disconnect"]
+
+    asyncio.run(run_test())
+
+
+def test_apply_io_timeout_sets_param_and_socket_timeout() -> None:
+    client = snap7.client.Client()
+    sock = socket.socket()
+    try:
+        # snap7 3.x 纯 Python 实现：实际收发超时取连接对象的 socket 超时
+        client.connection = SimpleNamespace(timeout=5.0, socket=sock)
+        apply_io_timeout(client, 0.8)
+        assert client.get_param(Parameter.RecvTimeout) == 800
+        assert client.get_param(Parameter.SendTimeout) == 800
+        assert client.connection.timeout == 0.8
+        assert sock.gettimeout() == 0.8
+    finally:
+        sock.close()

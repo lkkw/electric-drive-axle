@@ -48,14 +48,17 @@ async def judge_test(
     """把结果写入 PLC Result 上传 MES，保存试车记录，并清零统计开始下一台。
 
     PLC 未连接或写入失败时仍保存记录（标记未写入 PLC），并在返回信息中提示。
-    循环测试执行中或正在自动判定时拒绝，避免与自动判定重复。
+    循环测试执行中、正在自动判定或已有判定在保存时拒绝；判定期间也不允许启动循环测试。
     """
-    blocker = axle.judge_blocker()
+    blocker = axle.begin_manual_judge()
     if blocker:
         raise HTTPException(status_code=409, detail=blocker)
-    return await auto_judge.judge_test(
-        result=request.result, remark=request.remark, axle=axle, plc=plc, store=store
-    )
+    try:
+        return await auto_judge.judge_test(
+            result=request.result, remark=request.remark, axle=axle, plc=plc, store=store
+        )
+    finally:
+        axle.end_manual_judge()
 
 
 def _filters(

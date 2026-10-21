@@ -73,6 +73,9 @@ def package_desktop(args: argparse.Namespace) -> Path:
         "uvicorn",
         "--collect-all",
         "webview",
+        # PLC 通讯库在连接真实 PLC 时才延迟导入，冒烟测试覆盖不到，显式收集全部子模块
+        "--collect-submodules",
+        "snap7",
         "--add-data",
         pyinstaller_data_option(STATIC_DIR, "static"),
         "--add-data",

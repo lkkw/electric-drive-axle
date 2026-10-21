@@ -4,7 +4,6 @@ import { RouterLink } from 'vue-router'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { SITE_HEADER_ACTIONS } from '@/components/layout/headerActions'
-import AxleTelemetryChart from '@/components/axle/AxleTelemetryChart.vue'
 import McuTelemetryCard from '@/components/axle/McuTelemetryCard.vue'
 import TestJudgeCard from '@/components/axle/TestJudgeCard.vue'
 import VcuCommandCard from '@/components/axle/VcuCommandCard.vue'
@@ -46,12 +45,7 @@ const axleStore = useAxleStore()
       </div>
     </div>
 
-    <!-- 试车判定：合格 / NG 写入 PLC 并保存试车记录 -->
+    <!-- 试车判定：合格 / NG 写入 PLC 并保存试车记录（转速与转矩曲线已并入右侧 MCU 卡片） -->
     <TestJudgeCard />
-
-    <!-- 底部通栏：动力响应实时动态波形曲线 -->
-    <div class="w-full">
-      <AxleTelemetryChart />
-    </div>
   </div>
 </template>

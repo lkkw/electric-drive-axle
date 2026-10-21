@@ -282,10 +282,7 @@ onMounted(async () => {
                 :disabled="isLoading"
                 :aria-invalid="feedbackTimeoutInvalid || undefined"
               />
-              <FieldDescription v-if="!feedbackTimeoutInvalid">
-                MCU_2 (0x35B) 周期 10 ms。
-              </FieldDescription>
-              <FieldError v-else>请输入 100–5000 之间的整数。</FieldError>
+              <FieldError v-if="feedbackTimeoutInvalid">请输入 100–5000 之间的整数。</FieldError>
             </Field>
           </div>
         </FieldGroup>

@@ -12,11 +12,24 @@ export interface CycleStep {
   durationSeconds: number
 }
 
+/**
+ * 默认工况：正转 1000 / 2000 / 3000 → N 缓冲 → 反转 1000 / 2000 / 3000 → N 缓冲。
+ * 反转由 R 挡决定方向，目标转速填正值（后端拒绝负转速）。
+ * 后端按 200 RPM/s 斜坡降速（减少回馈能量、防母线过压），3000 RPM 降到 0 约 15 s，
+ * 换向缓冲留 20 s 保证电机停稳后再反向；末尾的缓冲用于多圈时反转接回正转。
+ */
+const RUN_STEP_SECONDS = 60
+const NEUTRAL_BUFFER_SECONDS = 20
+
 export const DEFAULT_CYCLE_STEPS: readonly CycleStep[] = [
-  { id: 'step-1', name: '正转运行', gear: 1, targetSpeed: 1000, durationSeconds: 60 },
-  { id: 'step-2', name: '换向缓冲', gear: 3, targetSpeed: 0, durationSeconds: 5 },
-  { id: 'step-3', name: '反转运行', gear: 2, targetSpeed: 1000, durationSeconds: 60 },
-  { id: 'step-4', name: '换向缓冲', gear: 3, targetSpeed: 0, durationSeconds: 5 },
+  { id: 'step-1', name: '正转 1000', gear: 1, targetSpeed: 1000, durationSeconds: RUN_STEP_SECONDS },
+  { id: 'step-2', name: '正转 2000', gear: 1, targetSpeed: 2000, durationSeconds: RUN_STEP_SECONDS },
+  { id: 'step-3', name: '正转 3000', gear: 1, targetSpeed: 3000, durationSeconds: RUN_STEP_SECONDS },
+  { id: 'step-4', name: '换向缓冲', gear: 3, targetSpeed: 0, durationSeconds: NEUTRAL_BUFFER_SECONDS },
+  { id: 'step-5', name: '反转 1000', gear: 2, targetSpeed: 1000, durationSeconds: RUN_STEP_SECONDS },
+  { id: 'step-6', name: '反转 2000', gear: 2, targetSpeed: 2000, durationSeconds: RUN_STEP_SECONDS },
+  { id: 'step-7', name: '反转 3000', gear: 2, targetSpeed: 3000, durationSeconds: RUN_STEP_SECONDS },
+  { id: 'step-8', name: '换向缓冲', gear: 3, targetSpeed: 0, durationSeconds: NEUTRAL_BUFFER_SECONDS },
 ]
 
 let nextStepId = 100
@@ -82,7 +95,7 @@ export function useCycleTest() {
     const gear: CycleGear = lastStep?.gear === 1 ? 2 : 1
     const newStep: CycleStep = {
       id: `step-${nextStepId++}`,
-      name: gear === 1 ? '正转运行' : '反转运行',
+      name: `${gear === 1 ? '正转' : '反转'} 1000`,
       gear,
       targetSpeed: 1000,
       durationSeconds: 60,
@@ -166,7 +179,7 @@ export function useCycleTest() {
 
   async function startTest() {
     if (!axleStore.isConnected) {
-      toast.error('CAN 未连接，无法启动循环测试')
+      toast.error('CAN 未连接，无法启动自动控制')
       return
     }
     if (axleStore.isEmergencyLocked) {
@@ -174,18 +187,18 @@ export function useCycleTest() {
       return
     }
     if (isAutoJudging.value) {
-      toast.warning('上一轮循环测试正在自动判定 / 下电，请稍候')
+      toast.warning('上一轮自动控制正在自动判定 / 下电，请稍候')
       return
     }
     const request = buildRequest()
     if (!request) return
     try {
       await axleStore.runCycleTest(request)
-      toast.success('循环测试已由后端启动', {
+      toast.success('自动控制已由后端启动', {
         description: `共 ${request.steps.length} 个步骤，计划循环 ${request.total_loops} 圈`,
       })
     } catch (error) {
-      toast.error('循环测试启动失败', {
+      toast.error('自动控制启动失败', {
         description: error instanceof Error ? error.message : '请检查通信链路',
       })
     }
@@ -194,9 +207,9 @@ export function useCycleTest() {
   async function pauseTest() {
     try {
       await axleStore.pauseCycle()
-      toast.info('循环测试已暂停，安全命令已写入')
+      toast.info('自动控制已暂停，安全命令已写入')
     } catch (error) {
-      toast.error('暂停循环测试失败', {
+      toast.error('暂停自动控制失败', {
         description: error instanceof Error ? error.message : '请立即使用急停',
       })
     }
@@ -205,9 +218,9 @@ export function useCycleTest() {
   async function resumeTest() {
     try {
       await axleStore.resumeCycle()
-      toast.success('循环测试已继续')
+      toast.success('自动控制已继续')
     } catch (error) {
-      toast.error('继续循环测试失败', {
+      toast.error('继续自动控制失败', {
         description: error instanceof Error ? error.message : '请检查 CAN 和急停状态',
       })
     }
@@ -216,9 +229,9 @@ export function useCycleTest() {
   async function stopTest(reason?: string) {
     try {
       await axleStore.stopCycle()
-      toast.info(reason ?? '循环测试已终止，控制权已释放')
+      toast.info(reason ?? '自动控制已终止，控制权已释放')
     } catch (error) {
-      toast.error('终止循环测试失败', {
+      toast.error('终止自动控制失败', {
         description: error instanceof Error ? error.message : '请立即使用急停',
       })
     }
