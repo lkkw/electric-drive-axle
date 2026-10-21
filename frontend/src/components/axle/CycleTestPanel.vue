@@ -284,7 +284,7 @@ const autoJudgeDetail = computed(() =>
       v-if="axleStore.telemetry.cycle_test.last_error"
       variant="destructive"
     >
-      <AlertTitle>循环测试已停止</AlertTitle>
+      <AlertTitle>自动控制已停止</AlertTitle>
       <AlertDescription>{{ axleStore.telemetry.cycle_test.last_error }}</AlertDescription>
     </Alert>
 

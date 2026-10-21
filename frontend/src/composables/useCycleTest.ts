@@ -178,7 +178,7 @@ export function useCycleTest() {
 
   async function startTest() {
     if (!axleStore.isConnected) {
-      toast.error('CAN 未连接，无法启动循环测试')
+      toast.error('CAN 未连接，无法启动自动控制')
       return
     }
     if (axleStore.isEmergencyLocked) {
@@ -186,18 +186,18 @@ export function useCycleTest() {
       return
     }
     if (isAutoJudging.value) {
-      toast.warning('上一轮循环测试正在自动判定 / 下电，请稍候')
+      toast.warning('上一轮自动控制正在自动判定 / 下电，请稍候')
       return
     }
     const request = buildRequest()
     if (!request) return
     try {
       await axleStore.runCycleTest(request)
-      toast.success('循环测试已由后端启动', {
+      toast.success('自动控制已由后端启动', {
         description: `共 ${request.steps.length} 个步骤，计划循环 ${request.total_loops} 圈`,
       })
     } catch (error) {
-      toast.error('循环测试启动失败', {
+      toast.error('自动控制启动失败', {
         description: error instanceof Error ? error.message : '请检查通信链路',
       })
     }
@@ -206,9 +206,9 @@ export function useCycleTest() {
   async function pauseTest() {
     try {
       await axleStore.pauseCycle()
-      toast.info('循环测试已暂停，安全命令已写入')
+      toast.info('自动控制已暂停，安全命令已写入')
     } catch (error) {
-      toast.error('暂停循环测试失败', {
+      toast.error('暂停自动控制失败', {
         description: error instanceof Error ? error.message : '请立即使用急停',
       })
     }
@@ -217,9 +217,9 @@ export function useCycleTest() {
   async function resumeTest() {
     try {
       await axleStore.resumeCycle()
-      toast.success('循环测试已继续')
+      toast.success('自动控制已继续')
     } catch (error) {
-      toast.error('继续循环测试失败', {
+      toast.error('继续自动控制失败', {
         description: error instanceof Error ? error.message : '请检查 CAN 和急停状态',
       })
     }
@@ -228,9 +228,9 @@ export function useCycleTest() {
   async function stopTest(reason?: string) {
     try {
       await axleStore.stopCycle()
-      toast.info(reason ?? '循环测试已终止，控制权已释放')
+      toast.info(reason ?? '自动控制已终止，控制权已释放')
     } catch (error) {
-      toast.error('终止循环测试失败', {
+      toast.error('终止自动控制失败', {
         description: error instanceof Error ? error.message : '请立即使用急停',
       })
     }

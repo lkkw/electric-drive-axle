@@ -7,8 +7,10 @@ import {
   CircleOffIcon,
   PauseIcon,
   PlayIcon,
+  PlugIcon,
   RadioTowerIcon,
   Trash2Icon,
+  UnplugIcon,
 } from '@lucide/vue'
 
 import { cn } from '@/lib/utils'
@@ -246,226 +248,241 @@ onBeforeUnmount(() => {
       <AlertDescription>{{ axleStore.error }}</AlertDescription>
     </Alert>
 
-    <!-- 顶部网格：硬件配置 + 通信状态与统计 -->
-    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 shrink-0">
-      <!-- 硬件配置卡片 (占 7 列) -->
-      <div class="lg:col-span-7">
-        <Card class="border-border shadow-xs h-full flex flex-col justify-between">
-          <CardHeader class="pb-3 border-b bg-muted/20">
-            <div class="flex items-center justify-between">
-              <div>
-                <CardTitle class="text-base font-semibold">USBCAN 硬件参数配置</CardTitle>
-              </div>
-              <div class="flex items-center gap-2">
-                <!-- 空闲时总线无应答（多为控制器未上电）：只在此处标出，不弹全局提示；恢复通信后自动消失 -->
-                <Tooltip v-if="axleStore.isConnected && axleStore.busWarning">
-                  <TooltipTrigger as-child>
-                    <Badge variant="warning" tabindex="0">
-                      <RadioTowerIcon data-icon="inline-start" />
-                      控制器无应答
-                    </Badge>
-                  </TooltipTrigger>
-                  <TooltipContent class="max-w-xs">{{ axleStore.busWarning }}</TooltipContent>
-                </Tooltip>
-                <Badge
-                  :variant="axleStore.isConnected ? 'success' : 'outline'"
-                  :class="cn(!axleStore.isConnected && 'text-muted-foreground')"
-                >
-                  <component
-                    :is="axleStore.isConnected ? CheckCircle2Icon : CircleOffIcon"
-                    data-icon="inline-start"
-                  />
-                  {{ axleStore.isConnected ? '硬件在线' : '未连接' }}
+    <!-- 设备连接：参数与连接按钮同一行，收发统计压缩为底部状态条 -->
+    <Card class="border-border shadow-xs shrink-0">
+      <CardHeader class="pb-3 border-b bg-muted/20">
+        <div class="flex items-center justify-between">
+          <CardTitle class="text-base font-semibold">USBCAN 设备连接</CardTitle>
+          <div class="flex items-center gap-2">
+            <!-- 空闲时总线无应答（多为控制器未上电）：只在此处标出，不弹全局提示；恢复通信后自动消失 -->
+            <Tooltip v-if="axleStore.isConnected && axleStore.busWarning">
+              <TooltipTrigger as-child>
+                <Badge variant="warning" tabindex="0">
+                  <RadioTowerIcon data-icon="inline-start" />
+                  控制器无应答
                 </Badge>
-              </div>
-            </div>
-          </CardHeader>
+              </TooltipTrigger>
+              <TooltipContent class="max-w-xs">{{ axleStore.busWarning }}</TooltipContent>
+            </Tooltip>
+            <Badge
+              :variant="axleStore.isConnected ? 'success' : 'outline'"
+              :class="cn(!axleStore.isConnected && 'text-muted-foreground')"
+            >
+              <component
+                :is="axleStore.isConnected ? CheckCircle2Icon : CircleOffIcon"
+                data-icon="inline-start"
+              />
+              {{ axleStore.isConnected ? '硬件在线' : '未连接' }}
+            </Badge>
+          </div>
+        </div>
+      </CardHeader>
 
-          <CardContent class="p-4 sm:p-5 flex flex-col gap-4">
-            <FieldGroup class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3.5">
-              <!-- 设备型号 -->
-              <Field>
-                <FieldLabel class="text-xs font-semibold text-muted-foreground">设备型号</FieldLabel>
-                <Select
-                  :model-value="String(connForm.device_type)"
-                  @update:model-value="(v) => connForm.device_type = Number(v)"
-                  :disabled="axleStore.isConnected || axleStore.loading"
+      <CardContent class="p-4 sm:p-5 flex flex-col gap-4">
+        <div class="flex flex-col gap-3.5 lg:flex-row lg:items-end">
+          <FieldGroup class="grid flex-1 grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+            <!-- 设备型号 -->
+            <Field>
+              <FieldLabel class="text-xs font-semibold text-muted-foreground">设备型号</FieldLabel>
+              <Select
+                :model-value="String(connForm.device_type)"
+                @update:model-value="(v) => connForm.device_type = Number(v)"
+                :disabled="axleStore.isConnected || axleStore.loading"
+              >
+                <SelectTrigger class="w-full font-mono">
+                  <SelectValue placeholder="选择设备型号" />
+                </SelectTrigger>
+                <SelectContent
+                  position="popper"
+                  side="bottom"
+                  align="start"
                 >
-                  <SelectTrigger class="w-full font-mono">
-                    <SelectValue placeholder="选择设备型号" />
-                  </SelectTrigger>
-                  <SelectContent
-                    position="popper"
-                    side="bottom"
-                    align="start"
-                  >
-                    <SelectGroup>
-                      <SelectItem value="4">USBCAN2</SelectItem>
-                      <SelectItem value="3">USBCAN1</SelectItem>
-                      <SelectItem value="21">USBCAN-2E-U</SelectItem>
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
-              </Field>
+                  <SelectGroup>
+                    <SelectItem value="4">USBCAN2</SelectItem>
+                    <SelectItem value="3">USBCAN1</SelectItem>
+                    <SelectItem value="21">USBCAN-2E-U</SelectItem>
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </Field>
 
-              <!-- 设备索引 -->
-              <Field>
-                <FieldLabel class="text-xs font-semibold text-muted-foreground">设备索引 (Index)</FieldLabel>
-                <Input
-                  v-model.number="connForm.device_index"
-                  type="number"
-                  min="0"
-                  max="15"
-                  :disabled="axleStore.isConnected || axleStore.loading"
-                  class="font-mono"
-                />
-              </Field>
+            <!-- 设备索引 -->
+            <Field>
+              <FieldLabel class="text-xs font-semibold text-muted-foreground">设备索引 (Index)</FieldLabel>
+              <Input
+                v-model.number="connForm.device_index"
+                type="number"
+                min="0"
+                max="15"
+                :disabled="axleStore.isConnected || axleStore.loading"
+                class="font-mono"
+              />
+            </Field>
 
-              <!-- 通道号 -->
-              <Field>
-                <FieldLabel class="text-xs font-semibold text-muted-foreground">CAN 通道</FieldLabel>
-                <Select
-                  :model-value="String(connForm.channel)"
-                  @update:model-value="(v) => connForm.channel = Number(v)"
-                  :disabled="axleStore.isConnected || axleStore.loading"
+            <!-- 通道号 -->
+            <Field>
+              <FieldLabel class="text-xs font-semibold text-muted-foreground">CAN 通道</FieldLabel>
+              <Select
+                :model-value="String(connForm.channel)"
+                @update:model-value="(v) => connForm.channel = Number(v)"
+                :disabled="axleStore.isConnected || axleStore.loading"
+              >
+                <SelectTrigger class="w-full font-mono">
+                  <SelectValue placeholder="选择通道" />
+                </SelectTrigger>
+                <SelectContent
+                  position="popper"
+                  side="bottom"
+                  align="start"
                 >
-                  <SelectTrigger class="w-full font-mono">
-                    <SelectValue placeholder="选择通道" />
-                  </SelectTrigger>
-                  <SelectContent
-                    position="popper"
-                    side="bottom"
-                    align="start"
-                  >
-                    <SelectGroup>
-                      <SelectItem value="0">CAN 通道 0</SelectItem>
-                      <SelectItem value="1">CAN 通道 1</SelectItem>
-                      <SelectItem value="-1">双通道 (全部)</SelectItem>
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
-              </Field>
+                  <SelectGroup>
+                    <SelectItem value="0">通道 0</SelectItem>
+                    <SelectItem value="1">通道 1</SelectItem>
+                    <SelectItem value="-1">双通道</SelectItem>
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </Field>
 
-              <!-- 波特率 -->
-              <Field>
-                <FieldLabel class="text-xs font-semibold text-muted-foreground">通信波特率</FieldLabel>
-                <Select
-                  :model-value="String(connForm.baud_rate)"
-                  @update:model-value="(v) => connForm.baud_rate = Number(v)"
-                  :disabled="axleStore.isConnected || axleStore.loading"
+            <!-- 波特率 -->
+            <Field>
+              <FieldLabel class="text-xs font-semibold text-muted-foreground">通信波特率</FieldLabel>
+              <Select
+                :model-value="String(connForm.baud_rate)"
+                @update:model-value="(v) => connForm.baud_rate = Number(v)"
+                :disabled="axleStore.isConnected || axleStore.loading"
+              >
+                <SelectTrigger class="w-full font-mono">
+                  <SelectValue placeholder="选择波特率" />
+                </SelectTrigger>
+                <SelectContent
+                  position="popper"
+                  side="bottom"
+                  align="start"
                 >
-                  <SelectTrigger class="w-full font-mono">
-                    <SelectValue placeholder="选择波特率" />
-                  </SelectTrigger>
-                  <SelectContent
-                    position="popper"
-                    side="bottom"
-                    align="start"
-                  >
-                    <SelectGroup>
-                      <SelectItem value="500000">500 kbps</SelectItem>
-                      <SelectItem value="250000">250 kbps</SelectItem>
-                      <SelectItem value="1000000">1000 kbps (1M)</SelectItem>
-                      <SelectItem value="125000">125 kbps</SelectItem>
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
-              </Field>
-            </FieldGroup>
+                  <SelectGroup>
+                    <SelectItem value="500000">500 kbps</SelectItem>
+                    <SelectItem value="250000">250 kbps</SelectItem>
+                    <SelectItem value="1000000">1000 kbps (1M)</SelectItem>
+                    <SelectItem value="125000">125 kbps</SelectItem>
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </Field>
+          </FieldGroup>
 
-            <!-- 操作按钮 -->
-            <div class="pt-2 flex items-center justify-end">
-              <div class="flex items-center gap-2">
-                <Button
-                  v-if="!axleStore.isConnected"
-                  class="h-11 px-5 font-semibold shadow-xs text-sm"
-                  :disabled="axleStore.loading || Boolean(axleStore.telemetry.driver_error)"
-                  @click="handleConnect"
-                >
-                  <Spinner v-if="axleStore.loading" data-icon="inline-start" />
-                  打开设备并启动通道
-                </Button>
+          <!-- 操作按钮：与参数输入框底部对齐 -->
+          <Button
+            v-if="!axleStore.isConnected"
+            class="w-full font-semibold shadow-xs lg:w-auto lg:min-w-40"
+            :disabled="axleStore.loading || Boolean(axleStore.telemetry.driver_error)"
+            @click="handleConnect"
+          >
+            <Spinner v-if="axleStore.loading" data-icon="inline-start" />
+            <PlugIcon v-else data-icon="inline-start" />
+            打开设备
+          </Button>
 
-                <Button
-                  v-else
-                  variant="destructive"
-                  class="h-11 px-5 font-semibold shadow-xs text-sm"
-                  :disabled="axleStore.loading"
-                  @click="handleDisconnect"
-                >
-                  <Spinner v-if="axleStore.loading" data-icon="inline-start" />
-                  停止通信并释放设备
-                </Button>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
+          <Button
+            v-else
+            variant="destructive"
+            class="w-full font-semibold shadow-xs lg:w-auto lg:min-w-40"
+            :disabled="axleStore.loading"
+            @click="handleDisconnect"
+          >
+            <Spinner v-if="axleStore.loading" data-icon="inline-start" />
+            <UnplugIcon v-else data-icon="inline-start" />
+            关闭设备
+          </Button>
+        </div>
 
-      <!-- 通信状态与统计指标 (占 5 列) -->
-      <div class="lg:col-span-5">
-        <Card class="border-border shadow-xs h-full flex flex-col justify-between">
-          <CardHeader class="pb-3 border-b bg-muted/20">
-            <CardTitle class="text-base font-semibold">总线收发统计</CardTitle>
-          </CardHeader>
-
-          <CardContent class="p-4 sm:p-5 flex flex-col gap-3">
-            <div class="grid grid-cols-3 gap-2.5">
-              <div class="p-2.5 rounded-lg bg-muted/30 border border-border/50 text-center">
-                <div class="text-[11px] text-muted-foreground font-semibold">发送帧数 (TX)</div>
-                <div class="text-lg font-bold font-mono text-info mt-0.5">
-                  {{ axleStore.telemetry.tx_frame_count }}
-                </div>
-              </div>
-
-              <div class="p-2.5 rounded-lg bg-muted/30 border border-border/50 text-center">
-                <div class="text-[11px] text-muted-foreground font-semibold">接收帧数 (RX)</div>
-                <div class="text-lg font-bold font-mono text-success mt-0.5">
-                  {{ axleStore.telemetry.rx_frame_count }}
-                </div>
-              </div>
-
-              <div class="p-2.5 rounded-lg bg-muted/30 border border-border/50 text-center">
-                <div class="text-[11px] text-muted-foreground font-semibold">发送错误 (ERR)</div>
-                <div
-                  class="text-lg font-bold font-mono mt-0.5"
-                  :class="cn(
-                    axleStore.telemetry.tx_error_count > 0
-                      ? 'text-destructive font-extrabold'
-                      : 'text-foreground',
-                  )"
-                >
-                  {{ axleStore.telemetry.tx_error_count }}
-                </div>
-              </div>
-            </div>
-
-            <div class="flex items-center justify-between text-xs">
-              <span class="text-muted-foreground">最近接收</span>
-              <span class="font-mono">
-                {{
-                  axleStore.telemetry.last_rx_timestamp
-                    ? new Date(axleStore.telemetry.last_rx_timestamp * 1000).toTimeString().slice(0, 8)
-                    : '未接收'
-                }}
-              </span>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-    </div>
+        <!-- 收发统计状态条：只在连接后显示，发送错误大于 0 时标红 -->
+        <div
+          v-if="axleStore.isConnected"
+          class="flex flex-wrap items-center gap-x-5 gap-y-1 border-t border-border/60 pt-3 text-xs text-muted-foreground"
+        >
+          <span>
+            TX
+            <span class="ml-1 font-mono text-info">{{ axleStore.telemetry.tx_frame_count }}</span>
+          </span>
+          <span>
+            RX
+            <span class="ml-1 font-mono text-success">{{ axleStore.telemetry.rx_frame_count }}</span>
+          </span>
+          <span>
+            发送错误
+            <span
+              class="ml-1 font-mono"
+              :class="cn(
+                axleStore.telemetry.tx_error_count > 0
+                  ? 'font-semibold text-destructive'
+                  : 'text-foreground',
+              )"
+            >
+              {{ axleStore.telemetry.tx_error_count }}
+            </span>
+          </span>
+          <span>
+            最近接收
+            <span class="ml-1 font-mono text-foreground">
+              {{
+                axleStore.telemetry.last_rx_timestamp
+                  ? new Date(axleStore.telemetry.last_rx_timestamp * 1000).toTimeString().slice(0, 8)
+                  : '未接收'
+              }}
+            </span>
+          </span>
+        </div>
+      </CardContent>
+    </Card>
 
     <!-- 原始报文监视器 (Bus Monitor) -->
     <Card class="border-border shadow-xs flex flex-col">
       <CardHeader class="pb-3 border-b bg-muted/20 shrink-0">
-        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-          <div>
-            <CardTitle class="text-base font-semibold flex items-center gap-2">
-              CAN 原始报文实时监视
-            </CardTitle>
+        <div class="flex flex-col gap-3">
+          <!-- 标题行：标题 + 监视动作（跟随、暂停、清空） -->
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <CardTitle class="text-base font-semibold">CAN 原始报文实时监视</CardTitle>
+            <div class="flex items-center gap-2">
+              <!-- 自动跟随滚屏（时间流模式） -->
+              <Button
+                v-if="viewMode === 'TRACE'"
+                size="sm"
+                variant="outline"
+                class="h-8 px-2.5 text-xs transition-none"
+                :class="autoScroll ? 'bg-primary/10 text-primary border-primary/30 font-medium' : 'text-muted-foreground'"
+                :title="autoScroll ? '当前正在自动跟随最新报文滚动' : '已暂停跟随，点击恢复自动滚到底部'"
+                @click="toggleAutoScroll"
+              >
+                <component :is="autoScroll ? ArrowDownToLineIcon : PauseIcon" data-icon="inline-start" />
+                {{ autoScroll ? '滚屏跟随' : '暂停跟随' }}
+              </Button>
+
+              <!-- 暂停/继续按钮 -->
+              <Button
+                size="sm"
+                variant="outline"
+                class="h-8 px-2.5 text-xs transition-none"
+                @click="togglePause"
+              >
+                <component :is="isPaused ? PlayIcon : PauseIcon" data-icon="inline-start" />
+                {{ isPaused ? '继续监视' : '暂停刷新' }}
+              </Button>
+
+              <!-- 清空按钮 -->
+              <Button
+                size="sm"
+                variant="outline"
+                class="h-8 px-2.5 text-xs text-destructive hover:text-destructive transition-none"
+                @click="handleClearFrames"
+              >
+                <Trash2Icon data-icon="inline-start" />
+                清空
+              </Button>
+            </div>
           </div>
 
-            <!-- 工具栏：暂停/继续、清空、过滤 -->
+          <!-- 筛选行：视图模式、方向、关键字 -->
           <div class="flex flex-wrap items-center gap-2">
             <!-- 视图模式切换 -->
             <ToggleGroup
@@ -509,44 +526,8 @@ onBeforeUnmount(() => {
               v-model="searchFilter"
               type="text"
               placeholder="过滤 ID / 报文..."
-              class="w-32 sm:w-44 font-mono"
+              class="h-8 w-full font-mono sm:w-56"
             />
-
-            <!-- 自动跟随滚屏（时间流模式） -->
-            <Button
-              v-if="viewMode === 'TRACE'"
-              size="sm"
-              variant="outline"
-              class="h-8 px-2.5 text-xs transition-none"
-              :class="autoScroll ? 'bg-primary/10 text-primary border-primary/30 font-medium' : 'text-muted-foreground'"
-              :title="autoScroll ? '当前正在自动跟随最新报文滚动' : '已暂停跟随，点击恢复自动滚到底部'"
-              @click="toggleAutoScroll"
-            >
-              <component :is="autoScroll ? ArrowDownToLineIcon : PauseIcon" data-icon="inline-start" />
-              {{ autoScroll ? '滚屏跟随' : '暂停跟随' }}
-            </Button>
-
-            <!-- 暂停/继续按钮 -->
-            <Button
-              size="sm"
-              variant="outline"
-              class="h-8 px-2.5 text-xs transition-none"
-              @click="togglePause"
-            >
-              <component :is="isPaused ? PlayIcon : PauseIcon" data-icon="inline-start" />
-              {{ isPaused ? '继续监视' : '暂停刷新' }}
-            </Button>
-
-            <!-- 清空按钮 -->
-            <Button
-              size="sm"
-              variant="outline"
-              class="h-8 px-2.5 text-xs text-destructive hover:text-destructive transition-none"
-              @click="handleClearFrames"
-            >
-              <Trash2Icon data-icon="inline-start" />
-              清空
-            </Button>
           </div>
         </div>
       </CardHeader>
@@ -555,7 +536,7 @@ onBeforeUnmount(() => {
         <!-- 监视表格：使用 ScrollArea 约束视口高度，配合 overflow-visible 保证 TableHeader 粘性吸顶 -->
         <ScrollArea
           ref="scrollAreaRef"
-          class="h-[460px] xl:h-[540px] w-full font-mono text-xs [&_[data-slot=table-container]]:overflow-visible"
+          class="h-[520px] xl:h-[640px] w-full font-mono text-xs [&_[data-slot=table-container]]:overflow-visible"
         >
           <Table class="w-full table-fixed text-left">
             <TableHeader class="sticky top-0 z-10 bg-muted/95 backdrop-blur-xs text-muted-foreground text-[11px] uppercase border-b border-border/80 shadow-xs">

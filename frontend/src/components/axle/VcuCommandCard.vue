@@ -60,7 +60,8 @@ import {
 
 const axleStore = useAxleStore();
 const cycleTest = useCycleTest();
-const activeTab = ref("manual");
+// 产线以自动控制（循环测试）为主，默认停在该页签
+const activeTab = ref("cycle");
 /** 循环测试运行、暂停或自动判定 / 下电期间，手动控制整体锁定 */
 const cycleLock = computed(() => cycleControlLock(axleStore.telemetry.cycle_test));
 const isManualLocked = computed(() => cycleLock.value.locked);
@@ -413,7 +414,7 @@ async function handleEmergencyReset() {
   <Tabs v-model="activeTab" class="h-full flex flex-col">
     <Card class="border-border shadow-xs h-full flex flex-col">
       <CardHeader class="pb-3 border-b bg-muted/20">
-        <!-- 标题区域即手动控制 / 循环测试切换：整行等分的分段按钮，台架上便于点选 -->
+        <!-- 标题区域即手动控制 / 自动控制切换：整行等分的分段按钮，台架上便于点选 -->
         <CardTitle class="sr-only">电驱控制</CardTitle>
         <TabsList class="grid h-11 w-full grid-cols-2 gap-1 border border-border/50 bg-muted/60 p-1">
           <TabsTrigger
@@ -427,7 +428,7 @@ async function handleEmergencyReset() {
           </TabsTrigger>
           <TabsTrigger value="cycle" class="h-full gap-2 text-sm font-semibold">
             <RepeatIcon class="size-4" />
-            <span>循环测试</span>
+            <span>自动控制</span>
             <Badge v-if="cycleLock.label" :variant="cycleLock.variant">
               {{ cycleLock.label }}
             </Badge>
@@ -440,7 +441,7 @@ async function handleEmergencyReset() {
           <AlertTitle>急停互锁已生效，控制输出已封锁</AlertTitle>
           <AlertDescription class="flex flex-col items-start gap-2">
             <span>
-              使能已关闭，目标转矩与转速归零，挡位已挂空挡。互锁解除前无法使能、下发非零控制量或启动循环测试。
+              使能已关闭，目标转矩与转速归零，挡位已挂空挡。互锁解除前无法使能、下发非零控制量或启动自动控制。
             </span>
             <Button
               size="sm"

@@ -584,7 +584,7 @@ class AxleManager:
     def _apply_cycle_step_locked(self) -> None:
         """在状态锁内将当前循环步骤转换为完整控制命令。"""
         if self._cycle_config is None:
-            raise CanDriverError("循环测试配置丢失。")
+            raise CanDriverError("自动控制配置丢失。")
         step = self._cycle_config.steps[self._cycle_status.current_step_index]
         self._cycle_status.current_step_name = step.name
         self._cycle_status.current_step_gear = step.gear
@@ -636,15 +636,15 @@ class AxleManager:
         """由后端取得控制权并启动单一循环测试状态机。"""
         async with self._lock:
             if not self._connected or not self._is_transmitting:
-                raise CanDriverError("CAN 未连接，无法启动循环测试。")
+                raise CanDriverError("CAN 未连接，无法启动自动控制。")
             if self._disconnecting:
-                raise CanDriverError("设备正在停止通信，无法启动循环测试。")
+                raise CanDriverError("设备正在停止通信，无法启动自动控制。")
             if self._is_emergency_locked:
                 raise CanDriverError("系统处于急停锁定状态，请先完成复位。")
             if self._cycle_status.status in {"running", "paused"}:
-                raise CanDriverError("已有循环测试正在执行。")
+                raise CanDriverError("已有自动控制正在执行。")
             if self._cycle_status.auto_judge == "pending":
-                raise CanDriverError("上一轮循环测试正在自动判定 / 下电，请稍候。")
+                raise CanDriverError("上一轮自动控制正在自动判定 / 下电，请稍候。")
             if self._manual_judging:
                 raise CanDriverError("正在保存试车判定，请稍候。")
 
@@ -677,7 +677,7 @@ class AxleManager:
             )
             result = self._cycle_status.model_copy()
             events.info(
-                "循环测试启动: %d 步 × %d 圈，计划 %d s",
+                "自动控制启动: %d 步 × %d 圈，计划 %d s",
                 result.total_steps,
                 result.total_loops,
                 result.planned_total_seconds,
@@ -690,12 +690,12 @@ class AxleManager:
         """暂停循环计时并立即写入完整安全命令。"""
         async with self._lock:
             if self._cycle_status.status != "running":
-                raise CanDriverError("当前没有可暂停的循环测试。")
+                raise CanDriverError("当前没有可暂停的自动控制。")
             self._cycle_status.status = "paused"
             self._set_safe_command_locked()
             result = self._cycle_status.model_copy()
             events.info(
-                "循环测试暂停: 第 %d 圈 第 %d 步",
+                "自动控制暂停: 第 %d 圈 第 %d 步",
                 result.current_loop,
                 result.current_step_index + 1,
             )
@@ -706,14 +706,14 @@ class AxleManager:
         """重新下发当前步骤并继续后端计时。"""
         async with self._lock:
             if self._cycle_status.status != "paused":
-                raise CanDriverError("当前没有可继续的循环测试。")
+                raise CanDriverError("当前没有可继续的自动控制。")
             if not self._connected or self._is_emergency_locked:
                 self._finish_cycle_locked("stopped", error="CAN 已断开或系统处于急停锁定状态。")
                 raise CanDriverError("CAN 已断开或系统处于急停锁定状态。")
             self._apply_cycle_step_locked()
             self._cycle_status.status = "running"
             result = self._cycle_status.model_copy()
-            events.info("循环测试继续")
+            events.info("自动控制继续")
         self._broadcast_telemetry()
         return result
 
@@ -724,7 +724,7 @@ class AxleManager:
             self._finish_cycle_locked("stopped")
             result = self._cycle_status.model_copy()
         if was_active:
-            events.info("循环测试被操作员终止: 已用时 %d s", result.total_elapsed_seconds)
+            events.info("自动控制被操作员终止: 已用时 %d s", result.total_elapsed_seconds)
         self._broadcast_telemetry()
         return result
 
@@ -764,13 +764,13 @@ class AxleManager:
 
                     if self._cycle_step_remaining <= 0:
                         if self._cycle_config is None:
-                            raise CanDriverError("循环测试配置丢失。")
+                            raise CanDriverError("自动控制配置丢失。")
                         next_index = self._cycle_status.current_step_index + 1
                         if next_index >= len(self._cycle_config.steps):
                             if self._cycle_status.current_loop >= self._cycle_status.total_loops:
                                 self._finish_cycle_locked("completed")
                                 events.info(
-                                    "循环测试完成: %d 圈，用时 %d s",
+                                    "自动控制完成: %d 圈，用时 %d s",
                                     self._cycle_status.total_loops,
                                     self._cycle_status.total_elapsed_seconds,
                                 )
@@ -794,8 +794,8 @@ class AxleManager:
         except asyncio.CancelledError:
             return
         except Exception as err:
-            logger.exception("循环测试状态机异常: %s", err)
-            events.error("循环测试异常终止: %s", err)
+            logger.exception("自动控制状态机异常: %s", err)
+            events.error("自动控制异常终止: %s", err)
             async with self._lock:
                 if generation == self._cycle_generation:
                     self._finish_cycle_locked("error", error=str(err))
@@ -812,11 +812,11 @@ class AxleManager:
                 raise CanDriverError("设备正在停止通信，暂不接受新的控制指令。")
             if self._cycle_status.status in {"running", "paused"}:
                 raise CanDriverError(
-                    "循环测试已取得控制权，手动控制已锁定。请先终止循环测试，或使用急停接口。"
+                    "自动控制已取得控制权，手动控制已锁定。请先终止自动控制，或使用急停接口。"
                 )
             # 自动判定期间（等待停转 → 判定 → 自动下电）不接受手动指令，避免干扰判定与下电
             if self._cycle_status.auto_judge == "pending":
-                raise CanDriverError("循环测试正在自动判定 / 下电，手动控制暂时锁定，请稍候。")
+                raise CanDriverError("自动控制正在自动判定 / 下电，手动控制暂时锁定，请稍候。")
 
             # 急停互锁保护：急停状态下禁止使能或写入非零控制量
             if self._is_emergency_locked:
@@ -913,9 +913,9 @@ class AxleManager:
     def judge_blocker(self) -> str | None:
         """手动判定前的放行检查；返回拒绝原因，None 表示允许。"""
         if self._cycle_status.status in {"running", "paused"}:
-            return "循环测试正在执行，结束后会自动判定"
+            return "自动控制正在执行，结束后会自动判定"
         if self._cycle_status.auto_judge == "pending":
-            return "循环测试正在自动判定 / 下电，请稍候"
+            return "自动控制正在自动判定 / 下电，请稍候"
         if self._manual_judging:
             return "试车判定正在保存，请勿重复提交"
         return None
@@ -964,7 +964,7 @@ class AxleManager:
         急停互锁不阻止上电：互锁期间电机无法使能，上高压不会让电机转动。
         """
         if self._cycle_status.status in {"running", "paused"}:
-            return "循环测试正在执行，请先终止循环测试"
+            return "自动控制正在执行，请先终止自动控制"
         if self._connected and self._command.mcu_en_cmd == 1:
             return "电机仍处于使能状态，请先停机并关闭使能"
         return None
@@ -1064,7 +1064,7 @@ class AxleManager:
             if self._disconnecting:
                 raise CanDriverError("设备正在停止通信。")
             if self._cycle_status.status in {"running", "paused"}:
-                raise CanDriverError("循环测试正在执行，请使用“终止并归零”。")
+                raise CanDriverError("自动控制正在执行，请使用“终止并归零”。")
 
             self._cancel_soft_stop_locked()
             self._command.torque_req = 0.0
@@ -1356,7 +1356,7 @@ class AxleManager:
                 or self._cycle_status.auto_judge == "pending"
             ) and request.can_id == CAN_ID_VCU_11:
                 raise CanDriverError(
-                    "循环测试运行或自动判定期间禁止手动下发 VCU_11 (0x258) 控制帧。"
+                    "自动控制运行或自动判定期间禁止手动下发 VCU_11 (0x258) 控制帧。"
                 )
             if self._is_emergency_locked and request.can_id == CAN_ID_VCU_11:
                 raise CanDriverError(

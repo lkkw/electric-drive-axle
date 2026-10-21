@@ -282,7 +282,7 @@ export const useAxleStore = defineStore('axle', () => {
     try {
       telemetry.value.cycle_test = await startCycleTest(request).send()
     } catch (err) {
-      error.value = err instanceof Error ? err.message : '启动循环测试异常'
+      error.value = err instanceof Error ? err.message : '启动自动控制异常'
       throw err
     } finally {
       cycleLoading.value = false
