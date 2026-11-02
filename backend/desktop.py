@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import importlib.util
 import logging
+import os
 import socket
 import sys
 import threading
 import time
 from collections.abc import Callable
 from contextlib import suppress
+from pathlib import Path
 from urllib.request import Request, urlopen
 
 import uvicorn
@@ -28,12 +31,199 @@ SHUTDOWN_TIMEOUT_SECONDS = 10.0
 SINGLE_INSTANCE_MUTEX_NAME = "Local\\ZhuChi-ElectricDriveAxle-EOL"
 ERROR_ALREADY_EXISTS = 183
 
+# .NET Framework 运行时配置：
+# 1. loadFromRemoteSources=true：允许加载带 Windows 安全区域标记（Zone.Identifier，如压缩包经微信/
+#    浏览器传输解压后）或位于网络路径下的 Python.Runtime.dll / WebView2 互操作 DLL（避免 0x80131515）。
+# 2. probing privatePath：将 PyInstaller _internal 下的 pythonnet 与 webview 托管 DLL 目录加入默认探测路径。
+DOTNET_RUNTIME_CONFIG_XML = """<?xml version="1.0" encoding="utf-8" ?>
+<configuration>
+  <runtime>
+    <loadFromRemoteSources enabled="true" />
+    <assemblyBinding xmlns="urn:schemas-microsoft-com:asm.v1">
+      <probing privatePath="_internal;_internal\\pythonnet\\runtime;_internal\\webview\\lib" />
+    </assemblyBinding>
+  </runtime>
+</configuration>
+"""
+
+_UNBLOCK_EXTENSIONS = frozenset({".dll", ".pyd", ".exe"})
+_ZONE_IDENTIFIER_SUFFIX = ":Zone.Identifier"
+
 CLOSE_CONFIRM_MESSAGE = (
     "电驱桥仍在运行（MCU 已使能或循环测试未结束）。\n\n"
     "关闭程序将发送停机帧并断开 CAN 通信，确定要关闭吗？"
 )
 
 logger = logging.getLogger("app.desktop")
+
+
+def unblock_bundled_files(root_dir: Path) -> int:
+    """移除目录下二进制文件的 Windows Zone.Identifier 备用数据流（等价于 Unblock-File）。"""
+    if sys.platform != "win32" or not root_dir.is_dir():
+        return 0
+
+    unblocked = 0
+    with suppress(OSError):
+        for path in root_dir.rglob("*"):
+            if path.suffix.lower() not in _UNBLOCK_EXTENSIONS:
+                continue
+            try:
+                os.unlink(f"{path}{_ZONE_IDENTIFIER_SUFFIX}")
+                unblocked += 1
+            except FileNotFoundError:
+                continue
+            except OSError:
+                continue
+    if unblocked > 0:
+        logger.info("已自动解除 %d 个运行库文件的 Windows 安全区域锁定", unblocked)
+    return unblocked
+
+
+def ensure_dotnet_config_file(
+    executable_path: Path | None = None,
+    fallback_dir: Path | None = None,
+) -> Path | None:
+    """确保 .NET 运行时配置文件存在，优先写入 EXE 同级目录，只读时回退到数据目录。"""
+    candidates: list[Path] = []
+    if executable_path is not None:
+        candidates.append(Path(f"{executable_path}.config"))
+    if fallback_dir is not None:
+        candidates.append(fallback_dir / "clr_runtime.config")
+
+    written_path: Path | None = None
+    for candidate in candidates:
+        try:
+            candidate.parent.mkdir(parents=True, exist_ok=True)
+            if (
+                not candidate.is_file()
+                or candidate.read_text(encoding="utf-8") != DOTNET_RUNTIME_CONFIG_XML
+            ):
+                candidate.write_text(DOTNET_RUNTIME_CONFIG_XML, encoding="utf-8")
+            if written_path is None:
+                written_path = candidate
+        except OSError:
+            continue
+    return written_path
+
+
+def configure_clr_startup(config_path: Path) -> bool:
+    """在 pythonnet 加载 ClrLoader.dll 前，向 Windows CLR 宿主绑定配置文件。"""
+    if sys.platform != "win32" or not config_path.is_file():
+        return False
+
+    try:
+        from ctypes import wintypes
+
+        class _GUID(ctypes.Structure):
+            _fields_ = [
+                ("Data1", wintypes.DWORD),
+                ("Data2", wintypes.WORD),
+                ("Data3", wintypes.WORD),
+                ("Data4", ctypes.c_ubyte * 8),
+            ]
+
+            def __init__(self, d1: int, d2: int, d3: int, *d4: int) -> None:
+                super().__init__(d1, d2, d3, (ctypes.c_ubyte * 8)(*d4))
+
+        clsid_clr_metahost = _GUID(
+            0x9280188D, 0x0E8E, 0x4867, 0xB3, 0x0C, 0x7F, 0xA8, 0x38, 0x84, 0xE8, 0xDE
+        )
+        iid_iclr_metahost = _GUID(
+            0xD332DB9E, 0xB9B3, 0x4125, 0x82, 0x07, 0xA1, 0x48, 0x84, 0xF5, 0x32, 0x16
+        )
+        iid_iclr_runtime_info = _GUID(
+            0xBD39D1D2, 0xBA2F, 0x486A, 0x89, 0xB0, 0xB4, 0xB0, 0xCB, 0x46, 0x68, 0x91
+        )
+
+        mscoree = ctypes.WinDLL("mscoree.dll")
+        meta_host = ctypes.c_void_p()
+        hr = mscoree.CLRCreateInstance(
+            ctypes.byref(clsid_clr_metahost),
+            ctypes.byref(iid_iclr_metahost),
+            ctypes.byref(meta_host),
+        )
+        if hr < 0 or not meta_host.value:
+            return False
+
+        runtime_info = ctypes.c_void_p()
+        try:
+            meta_vtbl_addr = ctypes.cast(meta_host.value, ctypes.POINTER(ctypes.c_void_p)).contents.value
+            meta_vtbl = ctypes.cast(meta_vtbl_addr, ctypes.POINTER(ctypes.c_void_p))
+            get_runtime = ctypes.WINFUNCTYPE(
+                ctypes.c_long,
+                ctypes.c_void_p,
+                wintypes.LPCWSTR,
+                ctypes.POINTER(_GUID),
+                ctypes.POINTER(ctypes.c_void_p),
+            )(meta_vtbl[3])
+
+            hr = get_runtime(
+                meta_host,
+                "v4.0.30319",
+                ctypes.byref(iid_iclr_runtime_info),
+                ctypes.byref(runtime_info),
+            )
+            if hr < 0 or not runtime_info.value:
+                return False
+
+            rt_vtbl_addr = ctypes.cast(
+                runtime_info.value, ctypes.POINTER(ctypes.c_void_p)
+            ).contents.value
+            rt_vtbl = ctypes.cast(rt_vtbl_addr, ctypes.POINTER(ctypes.c_void_p))
+            # ICLRRuntimeInfo::SetDefaultStartupFlags (vtable slot 11), STARTUP_CONCURRENT_GC = 0x1
+            set_startup_flags = ctypes.WINFUNCTYPE(
+                ctypes.c_long,
+                ctypes.c_void_p,
+                wintypes.DWORD,
+                wintypes.LPCWSTR,
+            )(rt_vtbl[11])
+            hr = set_startup_flags(runtime_info, 1, str(config_path))
+            return hr >= 0
+        finally:
+            if runtime_info.value:
+                rt_vtbl_addr = ctypes.cast(
+                    runtime_info.value, ctypes.POINTER(ctypes.c_void_p)
+                ).contents.value
+                rt_vtbl = ctypes.cast(rt_vtbl_addr, ctypes.POINTER(ctypes.c_void_p))
+                release_rt = ctypes.WINFUNCTYPE(wintypes.ULONG, ctypes.c_void_p)(rt_vtbl[2])
+                release_rt(runtime_info)
+            meta_vtbl_addr = ctypes.cast(
+                meta_host.value, ctypes.POINTER(ctypes.c_void_p)
+            ).contents.value
+            meta_vtbl = ctypes.cast(meta_vtbl_addr, ctypes.POINTER(ctypes.c_void_p))
+            release_meta = ctypes.WINFUNCTYPE(wintypes.ULONG, ctypes.c_void_p)(meta_vtbl[2])
+            release_meta(meta_host)
+    except Exception:
+        logger.debug("預配置 CLR 启动参数失败，将继续使用默认加载方式", exc_info=True)
+        return False
+
+
+def prepare_dotnet_runtime(data_dir: Path) -> None:
+    """在导入 pywebview/pythonnet 前执行 .NET 运行环境自愈。"""
+    if sys.platform != "win32":
+        return
+
+    is_frozen = bool(getattr(sys, "frozen", False))
+    exe_path = Path(sys.executable).resolve() if is_frozen else None
+    if exe_path is not None:
+        unblock_bundled_files(exe_path.parent)
+    else:
+        for pkg_name in ("clr_loader", "pythonnet", "webview"):
+            spec = importlib.util.find_spec(pkg_name)
+            if spec and spec.origin:
+                unblock_bundled_files(Path(spec.origin).resolve().parent)
+
+    config_path = ensure_dotnet_config_file(exe_path, fallback_dir=data_dir)
+    if config_path is not None:
+        configure_clr_startup(config_path)
+
+
+def verify_dotnet_bridge() -> None:
+    """冒烟测试时验证 pythonnet / Python.Runtime.dll 与 WinForms 桥接可正常加载。"""
+    if sys.platform != "win32":
+        return
+    import clr  # noqa: F401
+    import webview.platforms.winforms  # noqa: F401
 
 
 def acquire_single_instance(name: str = SINGLE_INSTANCE_MUTEX_NAME) -> int | None:
@@ -226,9 +416,11 @@ def main(*, smoke_test: bool = False) -> None:
     try:
         wait_until_started(server, thread)
         base_url = f"http://{HOST}:{port}"
+        prepare_dotnet_runtime(settings.data_dir)
         import webview
 
         if smoke_test:
+            verify_dotnet_bridge()
             verify_local_server(base_url)
             return
 
