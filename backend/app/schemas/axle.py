@@ -114,6 +114,30 @@ class CycleTestStartRequest(BaseModel):
         return self
 
 
+class CycleTestConfigStep(BaseModel):
+    """已保存工况中的单个步骤。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    gear: Literal[1, 2, 3]
+    target_speed: int
+    duration_seconds: int
+
+
+class CycleTestConfig(BaseModel):
+    """操作员编辑中的工况配置，仅校验结构。
+
+    编辑过程中允许暂时不满足运行规则（如缺 N 挡缓冲），启动时再由
+    ``CycleTestStartRequest`` 完整校验。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    steps: list[CycleTestConfigStep] = Field(min_length=1, max_length=100)
+    total_loops: int
+
+
 class CycleTestStatus(BaseModel):
     """由后端维护并通过 REST/SSE 对外发布的循环测试状态。"""
 
@@ -213,6 +237,12 @@ class AxleSafetyConfig(BaseModel):
     )
 
 
+class SafetyConfigRecord(AxleSafetyConfig):
+    """一次安全配置保存记录。"""
+
+    saved_at: str
+
+
 SafetyMetric = Literal[
     "motor_speed", "motor_torque", "motor_temperature", "feedback_timeout", "plc_safe"
 ]
@@ -293,6 +323,8 @@ class AxleTelemetry(BaseModel):
     link_error: str | None = None
     # 空闲时总线无应答（多为控制器未上电）：只提示、不断开，通信恢复后清除
     bus_warning: str | None = None
+    # 空闲时长时间收不到报文：软件正在自动复位通道并等待控制器（换台期间的正常状态）
+    waiting_for_controller: bool = False
     # 周立功动态库加载失败的原因；为 None 表示驱动可用。
     driver_error: str | None = None
     tx_frame_count: int = 0

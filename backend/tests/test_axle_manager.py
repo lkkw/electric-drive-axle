@@ -18,11 +18,14 @@ from app.schemas.axle import (
     AxleSafetyConfig,
     CanConnectRequest,
     CanSendRawFrameRequest,
+    CycleTestConfig,
+    CycleTestConfigStep,
     CycleTestStartRequest,
     CycleTestStep,
     VcuCommandUpdateRequest,
 )
-from app.services.axle_manager import AxleManager
+from app.services import axle_manager as axle_manager_module
+from app.services.axle_manager import MAX_SAFETY_HISTORY_RECORDS, AxleManager
 
 
 def create_mock_driver() -> MagicMock:
@@ -32,6 +35,7 @@ def create_mock_driver() -> MagicMock:
     driver.open_channel = AsyncMock()
     driver.transmit = AsyncMock(return_value=True)
     driver.receive = AsyncMock(return_value=[])
+    driver.restart_channel = AsyncMock()
     driver.close_channel = AsyncMock()
     driver.close_device = AsyncMock()
     driver.is_device_open = True
@@ -870,6 +874,103 @@ def test_idle_bus_no_response_warns_without_disconnect() -> None:
     asyncio.run(run_test())
 
 
+def expire_bus_idle(manager: AxleManager) -> None:
+    """把最近总线活动时间推到空闲阈值之前，免去测试真实等待。"""
+    manager._last_bus_activity -= axle_manager_module.BUS_RECOVERY_IDLE_SECONDS
+
+
+@pytest.fixture
+def fast_bus_recovery(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(axle_manager_module, "BUS_RECOVERY_POLL_SECONDS", 0.01)
+
+
+@pytest.mark.usefixtures("fast_bus_recovery")
+def test_idle_bus_recovers_after_controller_swap() -> None:
+    """换台：空闲无报文时自动复位通道并显示等待控制器，新控制器报文到达后恢复。"""
+
+    async def run_test() -> None:
+        driver = create_mock_driver()
+        manager = AxleManager(driver=driver)
+        await manager.connect(CanConnectRequest())
+        assert manager.get_telemetry().waiting_for_controller is False
+
+        expire_bus_idle(manager)
+        await asyncio.sleep(0.05)
+        driver.restart_channel.assert_awaited_once_with(0)
+        telemetry = manager.get_telemetry()
+        assert manager.is_connected
+        assert telemetry.waiting_for_controller is True
+        assert telemetry.bus_warning is not None
+        assert telemetry.link_error is None
+
+        # 仍无报文：按同一间隔继续重试
+        expire_bus_idle(manager)
+        await asyncio.sleep(0.05)
+        assert driver.restart_channel.await_count == 2
+
+        driver.receive.side_effect = lambda **_: [benign_mcu_2_frame()]
+        await asyncio.sleep(0.05)
+        telemetry = manager.get_telemetry()
+        assert telemetry.waiting_for_controller is False
+        assert telemetry.bus_warning is None
+
+        # 报文正常时不再复位
+        driver.restart_channel.reset_mock()
+        await asyncio.sleep(0.05)
+        driver.restart_channel.assert_not_awaited()
+        await manager.disconnect()
+
+    asyncio.run(run_test())
+
+
+@pytest.mark.usefixtures("fast_bus_recovery")
+def test_bus_recovery_skipped_while_motor_enabled() -> None:
+    """电机已使能时绝不自动复位通道，断联由链路故障和反馈看门狗处理。"""
+
+    async def run_test() -> None:
+        driver = create_mock_driver()
+        driver.receive.side_effect = lambda **_: [benign_mcu_2_frame()]
+        manager = AxleManager(driver=driver)
+        await manager.connect(CanConnectRequest())
+        await manager.update_command(VcuCommandUpdateRequest(mcu_en_cmd=VcuMcuEnCmd.ENABLE))
+
+        driver.receive.side_effect = None
+        driver.receive.return_value = []
+        await manager.update_safety_config(AxleSafetyConfig(enabled=False))
+        expire_bus_idle(manager)
+        await asyncio.sleep(0.05)
+
+        driver.restart_channel.assert_not_awaited()
+        assert manager.get_telemetry().waiting_for_controller is False
+        await manager.disconnect()
+
+    asyncio.run(run_test())
+
+
+@pytest.mark.usefixtures("fast_bus_recovery")
+def test_bus_recovery_failure_keeps_connection_and_stops_on_disconnect() -> None:
+    """复位失败（如 USBCAN 被拔）不断开连接；断开后恢复任务退出，状态清除。"""
+
+    async def run_test() -> None:
+        driver = create_mock_driver()
+        driver.restart_channel.side_effect = CanDriverError("复位通道 0 超时")
+        manager = AxleManager(driver=driver)
+        await manager.connect(CanConnectRequest())
+
+        expire_bus_idle(manager)
+        await asyncio.sleep(0.05)
+        assert manager.is_connected
+        assert manager.get_telemetry().waiting_for_controller is True
+
+        await manager.disconnect()
+        attempts = driver.restart_channel.await_count
+        await asyncio.sleep(0.05)
+        assert driver.restart_channel.await_count == attempts
+        assert manager.get_telemetry().waiting_for_controller is False
+
+    asyncio.run(run_test())
+
+
 def test_broadcasts_periodically_without_rx_frames() -> None:
     """总线无报文时也必须按固定节拍推送快照。"""
 
@@ -931,6 +1032,67 @@ def test_safety_config_persists_across_instances(tmp_path: Path) -> None:
     config_path.write_text("{not json", encoding="utf-8")
     fallback = AxleManager(driver=create_mock_driver(), safety_config_path=config_path)
     assert fallback.get_safety_config() == AxleSafetyConfig()
+
+
+def test_safety_history_persists_across_instances(tmp_path: Path) -> None:
+    """保存配置时追加记录：最新在前、限制条数、重启恢复，清空后保持为空。"""
+    history_path = tmp_path / "safety_history.json"
+
+    async def save_speeds(manager: AxleManager, speeds: range) -> None:
+        for speed in speeds:
+            await manager.update_safety_config(AxleSafetyConfig(max_motor_speed_rpm=speed))
+
+    first = AxleManager(driver=create_mock_driver(), safety_history_path=history_path)
+    asyncio.run(save_speeds(first, range(1000, 1000 + MAX_SAFETY_HISTORY_RECORDS + 5)))
+
+    restored = AxleManager(driver=create_mock_driver(), safety_history_path=history_path)
+    history = restored.get_safety_history()
+    assert len(history) == MAX_SAFETY_HISTORY_RECORDS
+    assert history[0].max_motor_speed_rpm == 1000 + MAX_SAFETY_HISTORY_RECORDS + 4
+    assert history[-1].max_motor_speed_rpm == 1005
+    assert history[0].saved_at
+
+    asyncio.run(restored.clear_safety_history())
+    assert restored.get_safety_history() == []
+    reopened = AxleManager(driver=create_mock_driver(), safety_history_path=history_path)
+    assert reopened.get_safety_history() == []
+
+    history_path.write_text("{not json", encoding="utf-8")
+    fallback = AxleManager(driver=create_mock_driver(), safety_history_path=history_path)
+    assert fallback.get_safety_history() == []
+
+
+def test_safety_history_write_failure_does_not_fail_config_save(tmp_path: Path) -> None:
+    """配置已生效时，保存记录写盘失败不应让保存失败。"""
+    # 把目标路径占成目录，os.replace 会失败
+    history_path = tmp_path / "safety_history.json"
+    history_path.mkdir()
+    manager = AxleManager(driver=create_mock_driver(), safety_history_path=history_path)
+
+    config = AxleSafetyConfig(max_motor_speed_rpm=4200)
+    assert asyncio.run(manager.update_safety_config(config)) == config
+    assert len(manager.get_safety_history()) == 1
+
+
+def test_cycle_config_persists_across_instances(tmp_path: Path) -> None:
+    """工况保存后，新实例应从文件恢复；损坏文件视为未保存。"""
+    config_path = tmp_path / "cycle_config.json"
+    saved = CycleTestConfig(
+        total_loops=5,
+        steps=[CycleTestConfigStep(name="正转", gear=1, target_speed=1500, duration_seconds=30)],
+    )
+
+    assert AxleManager(driver=create_mock_driver()).get_saved_cycle_config() is None
+
+    first = AxleManager(driver=create_mock_driver(), cycle_config_path=config_path)
+    asyncio.run(first.save_cycle_config(saved))
+
+    restored = AxleManager(driver=create_mock_driver(), cycle_config_path=config_path)
+    assert restored.get_saved_cycle_config() == saved
+
+    config_path.write_text("{not json", encoding="utf-8")
+    fallback = AxleManager(driver=create_mock_driver(), cycle_config_path=config_path)
+    assert fallback.get_saved_cycle_config() is None
 
 
 def test_log_throttle_suppresses_repeated_warnings(caplog: pytest.LogCaptureFixture) -> None:

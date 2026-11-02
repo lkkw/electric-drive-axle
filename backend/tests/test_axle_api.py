@@ -1,5 +1,7 @@
 """Integration and API tests for Electric Drive Axle endpoints."""
 
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -22,6 +24,47 @@ def test_get_axle_status_initial() -> None:
     assert "mcu_tbox" in data
     assert data["baud_rate"] == 500000
     assert data["command"]["gear_sts"] == 3  # 空挡 N
+
+
+def test_safety_history_records_saves_and_clears() -> None:
+    """保存安全配置后可查询到记录，清空后为空且不影响当前配置。"""
+    original = client.get("/api/v1/axle/safety/config").json()
+    try:
+        assert client.put("/api/v1/axle/safety/config", json=original).status_code == 200
+        history = client.get("/api/v1/axle/safety/history").json()
+        assert history[0]["max_motor_speed_rpm"] == original["max_motor_speed_rpm"]
+        assert history[0]["saved_at"]
+
+        assert client.delete("/api/v1/axle/safety/history").status_code == 204
+        assert client.get("/api/v1/axle/safety/history").json() == []
+        assert client.get("/api/v1/axle/safety/config").json() == original
+    finally:
+        client.put("/api/v1/axle/safety/config", json=original)
+
+
+def test_cycle_config_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """工况配置可保存并读回；编辑中缺 N 挡缓冲允许保存，结构错误被拒绝。"""
+    manager = axle_manager_module.get_axle_manager()
+    config_path = tmp_path / "cycle_config.json"
+    monkeypatch.setattr(manager, "_saved_cycle_config_path", config_path)
+    monkeypatch.setattr(manager, "_saved_cycle_config", None)
+
+    assert client.get("/api/v1/axle/cycle-test/config").json() is None
+
+    payload = {
+        "total_loops": 3,
+        "steps": [
+            {"name": "正转", "gear": 1, "target_speed": 1000, "duration_seconds": 60},
+            {"name": "反转", "gear": 2, "target_speed": 1000, "duration_seconds": 60},
+        ],
+    }
+    assert client.put("/api/v1/axle/cycle-test/config", json=payload).status_code == 200
+    assert client.get("/api/v1/axle/cycle-test/config").json() == payload
+    assert config_path.is_file()
+
+    invalid = {**payload, "steps": [{**payload["steps"][0], "gear": 9}]}
+    assert client.put("/api/v1/axle/cycle-test/config", json=invalid).status_code == 422
+    assert client.get("/api/v1/axle/cycle-test/config").json() == payload
 
 
 def test_update_axle_command() -> None:

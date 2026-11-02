@@ -259,7 +259,7 @@ onBeforeUnmount(() => {
               <TooltipTrigger as-child>
                 <Badge variant="warning" tabindex="0">
                   <RadioTowerIcon data-icon="inline-start" />
-                  控制器无应答
+                  {{ axleStore.telemetry.waiting_for_controller ? '等待控制器' : '控制器无应答' }}
                 </Badge>
               </TooltipTrigger>
               <TooltipContent class="max-w-xs">{{ axleStore.busWarning }}</TooltipContent>

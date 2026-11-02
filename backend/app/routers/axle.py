@@ -16,9 +16,11 @@ from app.schemas.axle import (
     AxleTelemetry,
     CanConnectRequest,
     CanSendRawFrameRequest,
+    CycleTestConfig,
     CycleTestStartRequest,
     CycleTestStatus,
     McuFaultCodeItem,
+    SafetyConfigRecord,
     VcuCommandState,
     VcuCommandUpdateRequest,
 )
@@ -232,6 +234,36 @@ async def stop_cycle_test(manager: AxleManagerDep) -> CycleTestStatus:
 
 
 @router.get(
+    "/cycle-test/config",
+    response_model=CycleTestConfig | None,
+    summary="获取已保存的自动控制工况",
+)
+async def get_cycle_test_config(manager: AxleManagerDep) -> CycleTestConfig | None:
+    """获取操作员保存的步骤序列与循环圈数；从未保存过时返回 null。"""
+    return manager.get_saved_cycle_config()
+
+
+@router.put(
+    "/cycle-test/config",
+    response_model=CycleTestConfig,
+    summary="保存自动控制工况",
+)
+async def save_cycle_test_config(
+    config: CycleTestConfig,
+    manager: AxleManagerDep,
+) -> CycleTestConfig:
+    """保存步骤序列与循环圈数；不影响正在运行的循环。"""
+    try:
+        return await manager.save_cycle_config(config)
+    except OSError as err:
+        logger.error("工况配置写入本地文件失败: %s", err)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"工况配置写入本地文件失败，重启后将丢失: {err}",
+        ) from err
+
+
+@router.get(
     "/safety/config",
     response_model=AxleSafetyConfig,
     summary="获取上位机自动紧急停机阈值",
@@ -260,6 +292,33 @@ async def update_safety_config(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"安全配置已在本次运行中生效，但写入本地文件失败，重启后将丢失: {err}",
+        ) from err
+
+
+@router.get(
+    "/safety/history",
+    response_model=list[SafetyConfigRecord],
+    summary="获取安全配置保存记录",
+)
+async def get_safety_history(manager: AxleManagerDep) -> list[SafetyConfigRecord]:
+    """获取每次保存安全配置时的阈值快照，最新的在前。"""
+    return manager.get_safety_history()
+
+
+@router.delete(
+    "/safety/history",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="清空安全配置保存记录",
+)
+async def clear_safety_history(manager: AxleManagerDep) -> None:
+    """清空保存记录；不影响当前生效的安全配置。"""
+    try:
+        await manager.clear_safety_history()
+    except OSError as err:
+        logger.error("安全配置保存记录写入本地文件失败: %s", err)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"保存记录写入本地文件失败，重启后将恢复: {err}",
         ) from err
 
 

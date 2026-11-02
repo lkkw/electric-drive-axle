@@ -1,8 +1,9 @@
-import { computed, ref } from 'vue'
+import { computed, onScopeDispose, ref, watch } from 'vue'
 import { toast } from 'vue-sonner'
 
+import { getCycleTestConfig, saveCycleTestConfig } from '@/api/axle'
 import { useAxleStore } from '@/stores/useAxleStore'
-import type { CycleGear, CycleTestStartRequest } from '@/types/axle'
+import type { CycleGear, CycleTestConfig, CycleTestStartRequest } from '@/types/axle'
 
 export interface CycleStep {
   id: string
@@ -34,10 +35,81 @@ export const DEFAULT_CYCLE_STEPS: readonly CycleStep[] = [
 
 let nextStepId = 100
 
+/** 连续输入时合并保存，避免每次按键都写盘 */
+const SAVE_DEBOUNCE_MS = 300
+
 export function useCycleTest() {
   const axleStore = useAxleStore()
   const totalLoops = ref(1)
   const steps = ref<CycleStep[]>(DEFAULT_CYCLE_STEPS.map((step) => ({ ...step })))
+
+  let saveTimer: ReturnType<typeof setTimeout> | undefined
+  let lastSavedConfig: string | undefined
+
+  function toConfig(): CycleTestConfig {
+    return {
+      total_loops: totalLoops.value,
+      steps: steps.value.map((step) => ({
+        name: step.name,
+        gear: step.gear,
+        target_speed: step.targetSpeed,
+        duration_seconds: step.durationSeconds,
+      })),
+    }
+  }
+
+  function persistConfig() {
+    clearTimeout(saveTimer)
+    saveTimer = undefined
+    const config = toConfig()
+    // 输入框清空等未输完的状态不保存，保留上一次完整配置
+    const isComplete = Number.isInteger(config.total_loops) && config.steps.every(
+      (step) => Number.isInteger(step.target_speed) && Number.isInteger(step.duration_seconds),
+    )
+    const serialized = JSON.stringify(config)
+    if (!isComplete || serialized === lastSavedConfig) return
+    lastSavedConfig = serialized
+    saveCycleTestConfig(config).send().catch((error: unknown) => {
+      lastSavedConfig = undefined
+      toast.warning('工况配置保存失败', {
+        description: error instanceof Error ? error.message : '请检查后端服务',
+      })
+    })
+  }
+
+  async function restoreConfig() {
+    try {
+      const saved = await getCycleTestConfig().send()
+      // 读取期间操作员已开始编辑时，以其编辑为准
+      if (!saved || saveTimer !== undefined) return
+      totalLoops.value = saved.total_loops
+      // 重新分配 id，避免与 addStep 生成的 id 冲突（步骤列表以 id 作 key）
+      steps.value = saved.steps.map((step) => ({
+        id: `step-${nextStepId++}`,
+        name: step.name,
+        gear: step.gear,
+        targetSpeed: step.target_speed,
+        durationSeconds: step.duration_seconds,
+      }))
+      lastSavedConfig = JSON.stringify(toConfig())
+    } catch {
+      // 读取失败时沿用默认工况，不阻塞操作
+    }
+  }
+
+  watch(
+    [steps, totalLoops],
+    () => {
+      clearTimeout(saveTimer)
+      saveTimer = setTimeout(persistConfig, SAVE_DEBOUNCE_MS)
+    },
+    { deep: true },
+  )
+  // 离开页面时立即写入尚未落盘的修改
+  onScopeDispose(() => {
+    if (saveTimer !== undefined) persistConfig()
+  }, true)
+  void restoreConfig()
 
   const status = computed(() => axleStore.telemetry.cycle_test.status)
   const isRunning = computed(() => status.value === 'running')

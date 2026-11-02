@@ -83,6 +83,7 @@ electric-drive-axle/
 | 反馈中断看门狗 | 使能期间 0x35B 超过 `feedback_timeout_ms`（默认 500 ms）未更新 | 记录事件并进入急停互锁 |
 | 链路故障自动断开 | 电机已使能或循环测试未结束时，同一通道收/发驱动调用连续异常 10 次或持续 1 s | 结束循环测试、尽力发送停机帧、释放设备并上报 `link_error` |
 | 总线无应答提示 | 空闲时（未使能、无循环测试）驱动调用异常，多为控制器未上电导致发送超时 | 保持连接，在 CAN 通讯页显示“控制器无应答”徽章（`bus_warning`）；恢复通信后自动消失 |
+| 换台自动恢复 | 空闲时连续 2 s 收不到任何报文（如拔插接插件换台） | 保持连接，每 2 s 复位一次 CAN 通道，页面显示“等待控制器”（`waiting_for_controller`）；收到报文后自动恢复，无需手动断开重连。电机使能或循环测试中不复位 |
 | PLC Safe 联锁 | 已请求上电或已通电时 PLC 安全回路断开（Safe=0） | 复位上电请求切断 340 V 高压，触发急停互锁 |
 | 急停切高压 | 任何急停或 CAN 链路故障 | 立即复位 PLC 上电请求 |
 | 断开/重连 | 操作员断开或重新连接 | 由 10 ms 循环连续发送两帧安全帧（Life 连续），等待旧任务退出后再释放句柄 |
@@ -100,6 +101,8 @@ electric-drive-axle/
 | 文件 | 内容 | 保留 |
 |---|---|---|
 | `safety_config.json` | 自动停机阈值，重启后自动恢复；损坏时回退默认值 | 永久 |
+| `safety_history.json` | 安全配置保存记录 | 最近 100 条 |
+| `cycle_config.json` | 自动控制工况（步骤序列、循环圈数），编辑后自动保存；损坏时回退默认工况 | 永久 |
 | `plc_config.json` | PLC 连接参数（IP、机架、槽号、仿真） | 永久 |
 | `test_records.db` | 试车记录（SQLite） | 永久 |
 | `exports\` | 导出的试车记录 CSV | 永久 |
@@ -160,19 +163,20 @@ pnpm build
 
 ## 打包 Windows 桌面 EXE
 
-直接运行根目录的 `package_exe.bat` 即可交互式选择单文件或目录模式。手动执行：
+双击根目录的 `package_exe.bat` 即可。手动执行：
 
 ```powershell
 cd backend
 uv sync --group desktop
-# 目录模式 + 控制台日志，适合现场调试
-uv run --group desktop python build.py --mode onedir --console --smoke-test
-# 单文件、无控制台的交付版本
-uv run --group desktop python build.py --mode onefile --smoke-test
+uv run --group desktop python build.py --smoke-test             # 交付版
+uv run --group desktop python build.py --console --smoke-test   # 带控制台日志，现场调试用
 ```
 
-产物位于 `backend/release/`。`backend/static`、`backend/build`、`backend/release` 均为生成
-目录，不要手工维护；打包前先关闭正在运行的旧 EXE。
+产物是 `backend/dist/Electric-Drive-Axle/` 文件夹：整个文件夹拷到工控机，运行其中的
+`Electric-Drive-Axle.exe`，不要单独拷 EXE。只打目录版：单文件版启动时要往 `%TEMP%` 解压，
+部分电脑上会报 “Could not create temporary directory!” 而无法启动。
+
+`backend/static`、`backend/build`、`backend/dist` 均为生成目录，不要手工维护；打包前先关闭正在运行的旧 EXE。
 
 ## 扩展 shadcn/vue 组件
 

@@ -1,18 +1,180 @@
 import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { effectScope } from 'vue'
 import { toast } from 'vue-sonner'
+import { getCycleTestConfig, saveCycleTestConfig } from '@/api/axle'
 import { useAxleStore } from '@/stores/useAxleStore'
+import type { CycleTestConfig } from '@/types/axle'
 import { useCycleTest } from './useCycleTest'
 
+vi.mock('@/api/axle', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/api/axle')>()
+  return {
+    ...actual,
+    getCycleTestConfig: vi.fn(),
+    saveCycleTestConfig: vi.fn(),
+  }
+})
+
+const SAVE_DEBOUNCE_MS = 300
+
 describe('useCycleTest composable', () => {
+  /** 模拟后端保存的配置 */
+  let savedConfig: CycleTestConfig | null
+
   beforeEach(() => {
     setActivePinia(createPinia())
     vi.useFakeTimers()
+    savedConfig = null
+    vi.mocked(getCycleTestConfig).mockImplementation(
+      () => ({ send: async () => savedConfig }) as unknown as ReturnType<typeof getCycleTestConfig>,
+    )
+    vi.mocked(saveCycleTestConfig).mockImplementation(
+      (config) =>
+        ({
+          send: async () => {
+            savedConfig = config
+            return config
+          },
+        }) as unknown as ReturnType<typeof saveCycleTestConfig>,
+    )
   })
 
   afterEach(() => {
+    vi.clearAllMocks()
     vi.restoreAllMocks()
     vi.useRealTimers()
+  })
+
+  async function flushSave() {
+    await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS)
+  }
+
+  it('修改工况后自动保存，重新进入页面时恢复', async () => {
+    const cycle = useCycleTest()
+    await flushSave()
+    cycle.steps.value[0].targetSpeed = 1500
+    cycle.steps.value[0].name = '正转 1500'
+    cycle.totalLoops.value = 5
+    cycle.removeStep(7)
+    await flushSave()
+
+    const restored = useCycleTest()
+    await flushSave()
+    expect(restored.steps.value).toHaveLength(7)
+    expect(restored.steps.value[0]).toMatchObject({
+      name: '正转 1500',
+      gear: 1,
+      targetSpeed: 1500,
+      durationSeconds: 60,
+    })
+    expect(restored.totalLoops.value).toBe(5)
+  })
+
+  it('未修改时不写入，恢复已保存配置也不重复写入', async () => {
+    useCycleTest()
+    await flushSave()
+    expect(saveCycleTestConfig).not.toHaveBeenCalled()
+
+    savedConfig = {
+      total_loops: 2,
+      steps: [{ name: '正转', gear: 1, target_speed: 1000, duration_seconds: 60 }],
+    }
+    useCycleTest()
+    await flushSave()
+    expect(saveCycleTestConfig).not.toHaveBeenCalled()
+  })
+
+  it('连续输入只保存一次', async () => {
+    const cycle = useCycleTest()
+    await flushSave()
+    for (const speed of [1, 15, 150, 1500]) {
+      cycle.steps.value[0].targetSpeed = speed
+      await vi.advanceTimersByTimeAsync(50)
+    }
+    await flushSave()
+
+    expect(saveCycleTestConfig).toHaveBeenCalledOnce()
+    expect(savedConfig?.steps[0].target_speed).toBe(1500)
+  })
+
+  it('离开页面时立即写入未落盘的修改', async () => {
+    const scope = effectScope()
+    const cycle = scope.run(() => useCycleTest())!
+    await flushSave()
+    cycle.steps.value[0].targetSpeed = 1500
+    await vi.advanceTimersByTimeAsync(0)
+    scope.stop()
+
+    expect(saveCycleTestConfig).toHaveBeenCalledOnce()
+  })
+
+  it('恢复后的步骤 id 不与新增步骤冲突', async () => {
+    savedConfig = {
+      total_loops: 1,
+      steps: [{ name: '正转', gear: 1, target_speed: 1000, duration_seconds: 60 }],
+    }
+    const cycle = useCycleTest()
+    await flushSave()
+    cycle.addStep()
+
+    const ids = cycle.steps.value.map((step) => step.id)
+    expect(new Set(ids).size).toBe(ids.length)
+  })
+
+  it('恢复默认会覆盖已保存的工况', async () => {
+    const cycle = useCycleTest()
+    await flushSave()
+    cycle.steps.value[0].targetSpeed = 1500
+    await flushSave()
+    cycle.resetToDefault()
+    await flushSave()
+
+    expect(savedConfig?.steps[0].target_speed).toBe(1000)
+  })
+
+  it('输入框清空时不覆盖上一次完整配置', async () => {
+    const cycle = useCycleTest()
+    await flushSave()
+    cycle.steps.value[0].targetSpeed = 1500
+    await flushSave()
+    // v-model.number 在输入框清空时给出空字符串
+    ;(cycle.steps.value[0] as { targetSpeed: unknown }).targetSpeed = ''
+    await flushSave()
+
+    expect(saveCycleTestConfig).toHaveBeenCalledOnce()
+    expect(savedConfig?.steps[0].target_speed).toBe(1500)
+  })
+
+  it('读取失败时沿用默认工况，保存失败时提示且下次修改重试', async () => {
+    vi.mocked(getCycleTestConfig).mockImplementation(
+      () =>
+        ({ send: () => Promise.reject(new Error('offline')) }) as unknown as ReturnType<
+          typeof getCycleTestConfig
+        >,
+    )
+    vi.mocked(saveCycleTestConfig).mockImplementationOnce(
+      () =>
+        ({ send: () => Promise.reject(new Error('磁盘已满')) }) as unknown as ReturnType<
+          typeof saveCycleTestConfig
+        >,
+    )
+    const toastWarningSpy = vi.spyOn(toast, 'warning')
+
+    const cycle = useCycleTest()
+    await flushSave()
+    expect(cycle.steps.value).toHaveLength(8)
+
+    cycle.steps.value[0].targetSpeed = 1500
+    await flushSave()
+    expect(toastWarningSpy).toHaveBeenCalledWith('工况配置保存失败', {
+      description: '磁盘已满',
+    })
+
+    cycle.steps.value[0].targetSpeed = 1600
+    await flushSave()
+    expect(saveCycleTestConfig).toHaveBeenCalledTimes(2)
+    expect(savedConfig?.steps[0].target_speed).toBe(1600)
   })
 
   it('初始状态为 idle 并默认装载正转 1000/2000/3000、反转 1000/2000/3000 工况', () => {

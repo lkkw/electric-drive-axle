@@ -104,6 +104,7 @@ const createInitialTelemetry = (): AxleTelemetry => ({
   soft_stopping: false,
   link_error: null,
   bus_warning: null,
+  waiting_for_controller: false,
   driver_error: null,
   tx_frame_count: 0,
   rx_frame_count: 0,

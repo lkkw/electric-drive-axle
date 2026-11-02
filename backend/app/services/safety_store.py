@@ -1,4 +1,4 @@
-"""自动停机阈值的本地 JSON 持久化。
+"""自动停机阈值及其保存记录的本地 JSON 持久化。
 
 阈值属于台架现场标定结果，进程重启后必须保持；读取失败时回退到默认值，
 保证安全监控始终以合法配置启动。
@@ -8,11 +8,13 @@ import logging
 import os
 from pathlib import Path
 
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
-from app.schemas.axle import AxleSafetyConfig
+from app.schemas.axle import AxleSafetyConfig, SafetyConfigRecord
 
 logger = logging.getLogger("app.safety_store")
+
+_SAFETY_HISTORY_ADAPTER = TypeAdapter(list[SafetyConfigRecord])
 
 
 def load_safety_config(path: Path | None) -> AxleSafetyConfig:
@@ -33,4 +35,25 @@ def save_safety_config(path: Path | None, config: AxleSafetyConfig) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_suffix(path.suffix + ".tmp")
     tmp_path.write_text(config.model_dump_json(indent=2), encoding="utf-8")
+    os.replace(tmp_path, path)
+
+
+def load_safety_history(path: Path | None) -> list[SafetyConfigRecord]:
+    """读取保存记录；文件不存在、损坏或字段非法时返回空列表。"""
+    if path is None or not path.is_file():
+        return []
+    try:
+        return _SAFETY_HISTORY_ADAPTER.validate_json(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, ValidationError) as err:
+        logger.warning("安全配置保存记录 %s 无法读取，已忽略: %s", path, err)
+        return []
+
+
+def save_safety_history(path: Path | None, records: list[SafetyConfigRecord]) -> None:
+    """原子写入保存记录，写入方式同 ``save_safety_config``。"""
+    if path is None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_bytes(_SAFETY_HISTORY_ADAPTER.dump_json(records, indent=2))
     os.replace(tmp_path, path)

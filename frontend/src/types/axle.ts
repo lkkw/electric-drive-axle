@@ -44,6 +44,12 @@ export interface CycleTestStartRequest {
   total_loops: number
 }
 
+/** 已保存的工况配置，仅校验结构；运行规则在启动时校验 */
+export interface CycleTestConfig {
+  steps: Omit<CycleTestStepRequest, 'id'>[]
+  total_loops: number
+}
+
 export interface CycleTestStatus {
   status: CycleTestState
   control_owner: 'none' | 'cycle'
@@ -169,6 +175,8 @@ export interface AxleTelemetry {
   link_error: string | null
   /** 空闲时总线无应答（多为控制器未上电）：只提示、不断开，通信恢复后为 null */
   bus_warning: string | null
+  /** 空闲时长时间收不到报文：软件正在自动复位通道并等待控制器（换台期间的正常状态） */
+  waiting_for_controller: boolean
   /** 周立功动态库加载失败的原因；null 表示驱动可用 */
   driver_error: string | null
   tx_frame_count: number
@@ -218,16 +226,8 @@ export const TBOX_FAULT_LEVEL_MAP: Record<number, string> = {
 }
 
 /** 安全配置保存生效记录快照 */
-export interface SafetyConfigRecord {
-  id: string
-  timestamp: string
-  rawTimestamp: number
-  enabled: boolean
-  max_motor_speed_rpm: number
-  max_motor_torque_nm: number
-  max_motor_temp_c: number
-  /** 旧版本记录无此字段 */
-  feedback_timeout_ms?: number
+export interface SafetyConfigRecord extends AxleSafetyConfig {
+  saved_at: string
 }
 
 export const MOTOR_STATE_MAP: Record<number, string> = {

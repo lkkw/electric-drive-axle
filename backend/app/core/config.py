@@ -34,6 +34,16 @@ class Settings:
         return self.data_dir / "safety_config.json"
 
     @property
+    def safety_history_path(self) -> Path:
+        """安全配置保存记录持久化文件路径。"""
+        return self.data_dir / "safety_history.json"
+
+    @property
+    def cycle_config_path(self) -> Path:
+        """自动控制工况（步骤序列、循环圈数）持久化文件路径。"""
+        return self.data_dir / "cycle_config.json"
+
+    @property
     def plc_config_path(self) -> Path:
         """PLC 连接参数（IP、机架、槽号、仿真）持久化文件路径。"""
         return self.data_dir / "plc_config.json"

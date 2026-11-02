@@ -3,7 +3,12 @@ import { computed, onMounted, ref } from 'vue'
 import { AlertTriangleIcon, SaveIcon, Trash2Icon } from '@lucide/vue'
 import { toast } from 'vue-sonner'
 
-import { getSafetyConfig, updateSafetyConfig } from '@/api/axle'
+import {
+  clearSafetyHistory,
+  getSafetyConfig,
+  getSafetyHistory,
+  updateSafetyConfig,
+} from '@/api/axle'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import {
@@ -38,11 +43,6 @@ import {
 import { SITE_HEADER_ACTIONS } from '@/components/layout/headerActions'
 import { useAxleStore } from '@/stores/useAxleStore'
 import type { AxleSafetyConfig, SafetyConfigRecord } from '@/types/axle'
-import {
-  SAFETY_HISTORY_STORAGE_KEY,
-  parseSafetyHistory,
-  prependSafetyHistory,
-} from './safetyConfigHistory'
 
 const axleStore = useAxleStore()
 
@@ -62,30 +62,26 @@ const saveError = ref<string | null>(null)
 /** 配置保存与下发生效历史审计列表 (上限 100 条) */
 const savedHistory = ref<SafetyConfigRecord[]>([])
 
-function loadHistoryFromStorage(): SafetyConfigRecord[] {
+/** 保存记录由后端在配置保存成功时写入，这里只负责读取 */
+async function loadSavedHistory() {
   try {
-    return parseSafetyHistory(localStorage.getItem(SAFETY_HISTORY_STORAGE_KEY))
-  } catch {
-    return []
+    savedHistory.value = await getSafetyHistory().send()
+  } catch (error) {
+    toast.warning('读取配置保存记录失败', {
+      description: error instanceof Error ? error.message : '请检查后端服务',
+    })
   }
 }
 
-/** 持久化保存记录至 localStorage */
-function saveHistoryToStorage(records: SafetyConfigRecord[]) {
+/** 清空保存审计记录 */
+async function clearSavedHistory() {
   try {
-    localStorage.setItem(SAFETY_HISTORY_STORAGE_KEY, JSON.stringify(records))
-  } catch {
-    // 忽略异常，防止无痕模式或存储空间满时阻塞操作
-  }
-}
-
-/** 清空本地保存审计记录 */
-function clearSavedHistory() {
-  savedHistory.value = []
-  try {
-    localStorage.removeItem(SAFETY_HISTORY_STORAGE_KEY)
-  } catch {
-    // 忽略异常
+    await clearSafetyHistory().send()
+    savedHistory.value = []
+  } catch (error) {
+    toast.error('清空配置保存记录失败', {
+      description: error instanceof Error ? error.message : '请检查后端服务',
+    })
   }
 }
 
@@ -115,12 +111,8 @@ const hasInvalidThreshold = computed(() =>
 )
 const lastTrip = computed(() => axleStore.telemetry.safety.last_trip)
 
-function formatTriggeredAt(timestamp: string) {
+function formatTimestamp(timestamp: string) {
   return new Date(timestamp).toLocaleString('zh-CN', { hour12: false })
-}
-
-function formatFeedbackTimeout(value: number | undefined) {
-  return value === undefined ? '—' : `${value} ms`
 }
 
 async function loadSafetyConfig() {
@@ -153,30 +145,7 @@ async function saveSafetyConfig() {
       feedback_timeout_ms: Number(config.value.feedback_timeout_ms),
     }).send()
     config.value = savedConfig
-
-    // 详细记录当前保存时间戳以及各项阈值
-    const now = new Date()
-    const record: SafetyConfigRecord = {
-      id: `cfg-${now.getTime()}`,
-      timestamp: now.toLocaleString('zh-CN', {
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-        hour12: false,
-      }),
-      rawTimestamp: now.getTime(),
-      enabled: savedConfig.enabled,
-      max_motor_speed_rpm: savedConfig.max_motor_speed_rpm,
-      max_motor_torque_nm: savedConfig.max_motor_torque_nm,
-      max_motor_temp_c: savedConfig.max_motor_temp_c,
-      feedback_timeout_ms: savedConfig.feedback_timeout_ms,
-    }
-
-    savedHistory.value = prependSafetyHistory(savedHistory.value, record)
-    saveHistoryToStorage(savedHistory.value)
+    await loadSavedHistory()
     toast.success(savedConfig.enabled ? '安全配置已保存并生效' : '安全监控已停用')
 
     if (!axleStore.sseConnected) await axleStore.refreshStatus()
@@ -188,8 +157,7 @@ async function saveSafetyConfig() {
 }
 
 onMounted(async () => {
-  savedHistory.value = loadHistoryFromStorage()
-  await loadSafetyConfig()
+  await Promise.all([loadSavedHistory(), loadSafetyConfig()])
 })
 </script>
 
@@ -340,13 +308,13 @@ onMounted(async () => {
             </TableHeader>
             <TableBody>
               <template v-if="savedHistory.length > 0">
-                <TableRow v-for="(item, index) in savedHistory" :key="item.id">
+                <TableRow v-for="(item, index) in savedHistory" :key="item.saved_at">
                   <TableCell class="text-center font-mono text-muted-foreground">
                     {{ index + 1 }}
                   </TableCell>
                   <TableCell class="font-mono">
                     <div class="flex items-center gap-1.5">
-                      <span>{{ item.timestamp }}</span>
+                      <span>{{ formatTimestamp(item.saved_at) }}</span>
                       <Badge v-if="index === 0" variant="success">最新生效</Badge>
                     </div>
                   </TableCell>
@@ -358,14 +326,12 @@ onMounted(async () => {
                   <TableCell class="font-mono">{{ item.max_motor_speed_rpm }}</TableCell>
                   <TableCell class="font-mono">{{ item.max_motor_torque_nm }}</TableCell>
                   <TableCell class="font-mono">{{ item.max_motor_temp_c }}</TableCell>
-                  <TableCell class="font-mono">
-                    {{ formatFeedbackTimeout(item.feedback_timeout_ms) }}
-                  </TableCell>
+                  <TableCell class="font-mono">{{ item.feedback_timeout_ms }} ms</TableCell>
                 </TableRow>
               </template>
               <TableEmpty v-else :colspan="HISTORY_COLUMN_COUNT">
                 <span class="text-muted-foreground">
-                  暂无本地保存记录。修改参数并点击“保存配置”后将在此记录。
+                  暂无保存记录。修改参数并点击“保存配置”后将在此记录。
                 </span>
               </TableEmpty>
             </TableBody>
@@ -379,7 +345,7 @@ onMounted(async () => {
       <AlertTitle>最近一次自动停机</AlertTitle>
       <AlertDescription class="flex flex-col gap-1">
         <p>{{ lastTrip.message }}</p>
-        <p>触发时间：{{ formatTriggeredAt(lastTrip.triggered_at) }}</p>
+        <p>触发时间：{{ formatTimestamp(lastTrip.triggered_at) }}</p>
       </AlertDescription>
     </Alert>
   </div>

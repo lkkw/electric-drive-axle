@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { RouterLink } from 'vue-router'
 
 import { Badge } from '@/components/ui/badge'
@@ -10,6 +11,15 @@ import VcuCommandCard from '@/components/axle/VcuCommandCard.vue'
 import { useAxleStore } from '@/stores/useAxleStore'
 
 const axleStore = useAxleStore()
+
+/** “已连接”只代表 USBCAN 已打开，换台期间控制器不在线时要明确提示 */
+const canBadge = computed(() => {
+  if (!axleStore.isConnected) return { variant: 'warning', text: 'CAN 未连接' } as const
+  if (axleStore.telemetry.waiting_for_controller) {
+    return { variant: 'warning', text: '等待控制器' } as const
+  }
+  return { variant: 'success', text: 'CAN 在线' } as const
+})
 </script>
 
 <template>
@@ -18,9 +28,7 @@ const axleStore = useAxleStore()
     <Teleport defer :to="SITE_HEADER_ACTIONS">
       <Button as-child variant="outline" size="sm">
         <RouterLink to="/can">
-          <Badge :variant="axleStore.isConnected ? 'success' : 'warning'">
-            {{ axleStore.isConnected ? 'CAN 在线' : 'CAN 未连接' }}
-          </Badge>
+          <Badge :variant="canBadge.variant">{{ canBadge.text }}</Badge>
           <span>
             {{
               axleStore.isConnected

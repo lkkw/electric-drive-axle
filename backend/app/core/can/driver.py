@@ -11,7 +11,7 @@ import os
 import platform
 import sys
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from ctypes import (
     byref,
@@ -46,6 +46,8 @@ _C_CALL_TIMEOUT: float = 5.0
 # 周期收发调用超时（秒）：单帧收发正常耗时为毫秒级，超时即视为硬件链路异常，
 # 让上层尽快判定掉线，而不是让 10ms 控制循环卡住数秒。
 _IO_CALL_TIMEOUT: float = 0.5
+# 通道复位与重启超时（秒）：期间收发暂停，不沿用打开设备的长超时。
+_CHANNEL_RESTART_TIMEOUT: float = 2.0
 
 
 class CanDriverError(Exception):
@@ -119,6 +121,8 @@ class ZlgCanDriver:
         self._device_handle: int = INVALID_DEVICE_HANDLE
         self._channel_handles: dict[int, int] = {}
         self._tx_lock = asyncio.Lock()  # 串行化硬件报文发送，防止并发调用损坏 C 驱动缓冲区
+        self._rx_lock = asyncio.Lock()  # 通道重启期间暂停接收
+        self._tx_pending: Future[int] | None = None  # 最近一次已提交的发送调用
         self._rx_buffer_cache: dict[tuple[int, int], ctypes.Array[ZCAN_Receive_Data]] = {}
         self._dll_path = self._resolve_dll_path(dll_path)
         self._dll = self._load_dll(self._dll_path)
@@ -388,15 +392,51 @@ class ZlgCanDriver:
             for i in range(data_len):
                 tx_obj.frame.data[i] = data[i]
 
-            ret = await self._call(
-                _IO_CALL_TIMEOUT,
-                "CAN 报文发送",
-                self._dll.ZCAN_Transmit,
-                chn_handle,
-                byref(tx_obj),
-                1,
-            )
+            ret = await self._transmit_frame(chn_handle, tx_obj)
             return ret == 1
+
+    async def _transmit_frame(self, chn_handle: int, tx_obj: ZCAN_Transmit_Data) -> int:
+        """提交一次发送调用；上一帧仍阻塞在驱动里时先等它返回。
+
+        总线无应答时 ``ZCAN_Transmit`` 可能长时间不返回，超时后工作线程仍被占用。
+        同一时间只留一个发送调用在线程里，避免阻塞的发送占满线程池、饿死接收。
+        """
+        timeout_error = f"CAN 报文发送超时（{_IO_CALL_TIMEOUT:g}s），硬件可能已断开。"
+        pending = self._tx_pending
+        if pending is not None and not pending.done():
+            done, _ = await asyncio.wait(
+                {asyncio.wrap_future(pending)},
+                timeout=_IO_CALL_TIMEOUT,
+            )
+            if not done:
+                raise CanDriverError(timeout_error)
+
+        future = self._executor.submit(self._dll.ZCAN_Transmit, chn_handle, byref(tx_obj), 1)
+        self._tx_pending = future
+        try:
+            return await asyncio.wait_for(asyncio.wrap_future(future), timeout=_IO_CALL_TIMEOUT)
+        except TimeoutError as err:
+            raise CanDriverError(timeout_error) from err
+
+    async def restart_channel(self, channel: int = 0) -> None:
+        """复位并重新启动通道，清除 Bus-Off 等卡死状态，通道配置与句柄保持不变。
+
+        :param channel: 通道号
+        """
+        async with self._tx_lock, self._rx_lock:
+            chn_handle = self._channel_handles.get(channel)
+            if not chn_handle:
+                raise CanChannelNotOpenError(f"通道 {channel} 未开启，无法重启。")
+            steps = (("复位", self._dll.ZCAN_ResetCAN), ("启动", self._dll.ZCAN_StartCAN))
+            for step, func in steps:
+                ret = await self._call(
+                    _CHANNEL_RESTART_TIMEOUT,
+                    f"{step}通道 {channel} ",
+                    func,
+                    chn_handle,
+                )
+                if ret != ZCAN_STATUS_OK:
+                    raise CanChannelNotOpenError(f"{step}通道 {channel} 失败。")
 
     async def receive(
         self,
@@ -421,15 +461,16 @@ class ZlgCanDriver:
             self._rx_buffer_cache[buf_key] = (ZCAN_Receive_Data * max_count)()
         rx_buffer = self._rx_buffer_cache[buf_key]
 
-        actual_num = await self._call(
-            _IO_CALL_TIMEOUT,
-            "CAN 报文接收",
-            self._dll.ZCAN_Receive,
-            chn_handle,
-            ctypes.cast(rx_buffer, P_ZCAN_Receive_Data),
-            max_count,
-            wait_time_ms,
-        )
+        async with self._rx_lock:
+            actual_num = await self._call(
+                _IO_CALL_TIMEOUT,
+                "CAN 报文接收",
+                self._dll.ZCAN_Receive,
+                chn_handle,
+                ctypes.cast(rx_buffer, P_ZCAN_Receive_Data),
+                max_count,
+                wait_time_ms,
+            )
 
         if not actual_num or actual_num <= 0:
             return []
@@ -540,6 +581,9 @@ class UnavailableCanDriver(ZlgCanDriver):
         max_count: int = 50,
         wait_time_ms: int = 1,
     ) -> list[CanRawFrame]:
+        raise self._unavailable()
+
+    async def restart_channel(self, channel: int = 0) -> None:
         raise self._unavailable()
 
     async def clear_buffer(self, channel: int = 0) -> None:
