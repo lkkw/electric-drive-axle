@@ -34,7 +34,17 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import {
   type CycleStep,
+  type CycleStepDraft,
   type useCycleTest,
 } from '@/composables/useCycleTest'
 import { Spinner } from '@/components/ui/spinner'
@@ -56,7 +66,7 @@ function formatDuration(totalSeconds: number): string {
   return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`
 }
 
-function handleGearChange(step: CycleStep, newGear: unknown) {
+function handleGearChange(step: CycleStepDraft, newGear: unknown) {
   const gear = Number(newGear)
   if (gear !== 1 && gear !== 2 && gear !== 3) return
   step.gear = gear
@@ -104,11 +114,15 @@ const statusText = computed(() => {
 })
 
 /**
- * 步骤序列的表头与每一行共用同一套列宽：序号 · 名称 · 挡位 · 目标转速 · 时长 · 删除。
- * 名称、挡位、转速、时长按比例分配剩余宽度（转速含 RPM 后缀稍宽，时长最短），并各有最小宽度。
+ * 步骤序列的表头与每一行共用同一套列宽：序号 · 名称 · 挡位 · 目标转速 · 时长 · 添加 · 删除。
+ * 单位写在表头，行内不再占宽度；名称、挡位、转速、时长按比例分配剩余宽度（名称最宽），并各有最小宽度。
  */
 const STEP_GRID =
-  'grid grid-cols-[1.25rem_minmax(4.5rem,1fr)_minmax(5.5rem,1fr)_minmax(6.5rem,1.2fr)_minmax(4.5rem,0.8fr)_1.75rem] items-center gap-1.5'
+  'grid grid-cols-[1.25rem_minmax(3.5rem,1.4fr)_minmax(5.5rem,1fr)_minmax(3.25rem,0.8fr)_minmax(2.5rem,0.6fr)_1.5rem_1.5rem] items-center gap-1'
+
+/** 隐藏数字框上下箭头：它不显示时也占约 15 px，列宽有限时会挤掉数字（键盘方向键仍可调） */
+const STEP_NUMBER_INPUT =
+  'h-7 w-full min-w-0 px-1.5 font-mono text-xs [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none'
 
 const GEAR_LABEL: Record<CycleStep['gear'], string> = {
   1: 'D 挡正转',
@@ -141,10 +155,10 @@ const remainingTotalSeconds = computed(() =>
  */
 const stepListEl = ref<HTMLElement | null>(null)
 
-function scrollCurrentStepIntoView() {
+function scrollStepIntoView(index: number) {
   const list = stepListEl.value
   const viewport = list?.closest<HTMLElement>('[data-slot="scroll-area-viewport"]')
-  const row = list?.querySelector<HTMLElement>(`[data-step-index="${cycle.currentStepIndex.value}"]`)
+  const row = list?.querySelector<HTMLElement>(`[data-step-index="${index}"]`)
   if (!viewport || !row) return
   const viewportRect = viewport.getBoundingClientRect()
   const rowRect = row.getBoundingClientRect()
@@ -156,10 +170,64 @@ function scrollCurrentStepIntoView() {
 watch(
   [cycle.currentStepIndex, cycle.isRunning],
   ([, running]) => {
-    if (running) void nextTick(scrollCurrentStepIntoView)
+    if (running) void nextTick(() => scrollStepIntoView(cycle.currentStepIndex.value))
   },
   { immediate: true },
 )
+
+/** 添加步骤对话框：新步骤插到所点行的下方，表单以该行的值作为初始值 */
+const isAddStepOpen = ref(false)
+const insertAfterIndex = ref(0)
+const newStep = ref<CycleStepDraft>({ name: '', gear: 1, targetSpeed: 1000, durationSeconds: 60 })
+/** 名称被改过后不再跟随挡位和转速自动生成 */
+const isNewStepNameEdited = ref(false)
+
+function defaultStepName(step: CycleStepDraft): string {
+  if (step.gear === 3) return '换向缓冲'
+  return `${step.gear === 1 ? '正转' : '反转'} ${step.targetSpeed}`
+}
+
+function openAddStep(index: number) {
+  const { name, gear, targetSpeed, durationSeconds } = cycle.steps.value[index]
+  insertAfterIndex.value = index
+  newStep.value = { name, gear, targetSpeed, durationSeconds }
+  isNewStepNameEdited.value = name !== defaultStepName(newStep.value)
+  isAddStepOpen.value = true
+}
+
+watch(
+  () => [newStep.value.gear, newStep.value.targetSpeed],
+  () => {
+    if (!isNewStepNameEdited.value) newStep.value.name = defaultStepName(newStep.value)
+  },
+)
+
+function confirmAddStep() {
+  if (!cycle.insertStep(insertAfterIndex.value, newStep.value)) return
+  isAddStepOpen.value = false
+  void nextTick(() => scrollStepIntoView(insertAfterIndex.value + 1))
+}
+
+/** 删除步骤的二次确认：写明步骤内容，避免删错行 */
+const isRemoveStepOpen = ref(false)
+const removeStepIndex = ref(0)
+
+const removeStepDescription = computed(() => {
+  const step = cycle.steps.value[removeStepIndex.value]
+  if (!step) return ''
+  const speed = step.gear === 3 ? '' : ` ${step.targetSpeed} RPM`
+  return `将删除第 ${removeStepIndex.value + 1} 步「${step.name}」：${GEAR_LABEL[step.gear]}${speed}，${step.durationSeconds} 秒。`
+})
+
+function requestRemoveStep(index: number) {
+  removeStepIndex.value = index
+  isRemoveStepOpen.value = true
+}
+
+function confirmRemoveStep() {
+  cycle.removeStep(removeStepIndex.value)
+  isRemoveStepOpen.value = false
+}
 
 function handleResetToDefault() {
   cycle.resetToDefault()
@@ -179,14 +247,14 @@ const autoJudgeDetail = computed(() =>
 <template>
   <div class="flex flex-col gap-4 flex-1">
     <!-- 圈数与时长：单行排布（圈数输入 · 单圈 / 总计时长 · 恢复默认） -->
-    <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
+    <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
       <Field
         orientation="horizontal"
         class="w-auto gap-2"
         :data-disabled="cycle.isRunning.value || cycle.isPaused.value || undefined"
       >
         <FieldLabel for="cycle-total-loops" class="shrink-0">循环圈数</FieldLabel>
-        <InputGroup class="h-8 w-24">
+        <InputGroup class="h-8 w-20">
           <InputGroupInput
             id="cycle-total-loops"
             v-model.number="cycle.totalLoops.value"
@@ -215,7 +283,7 @@ const autoJudgeDetail = computed(() =>
         v-if="cycle.isIdle.value"
         size="sm"
         variant="ghost"
-        class="ml-auto text-muted-foreground"
+        class="ml-auto px-1.5 text-muted-foreground"
         title="恢复初始的正反转标准步骤"
         @click="handleResetToDefault"
       >
@@ -308,34 +376,13 @@ const autoJudgeDetail = computed(() =>
 
     <!-- 步骤配置序列列表 -->
     <div class="flex min-h-0 flex-1 flex-col gap-2">
-      <div class="flex items-center justify-between">
-        <div class="flex items-center gap-2">
-          <span class="text-xs font-semibold text-muted-foreground">步骤序列</span>
-          <span class="text-[11px] text-muted-foreground font-mono">
-            (共 {{ cycle.steps.value.length }} 步)
-          </span>
-        </div>
-
-        <Button
-          size="sm"
-          variant="outline"
-          class="h-6.5 px-2 text-xs font-semibold"
-          :disabled="cycle.isRunning.value || cycle.isPaused.value"
-          @click="cycle.addStep"
-        >
-          <PlusIcon data-icon="inline-start" />
-          <span>添加步骤</span>
-        </Button>
-      </div>
-
-      <!-- 列标签表头 (与每一步单行输入严格对齐) -->
+      <!-- 列标签表头 (与每一步单行输入严格对齐)，首列合并显示步数 -->
       <div :class="cn(STEP_GRID, 'px-2 text-[11px] font-semibold text-muted-foreground select-none')">
-        <span aria-hidden="true"></span>
-        <span>步骤名称</span>
+        <span class="col-span-2 whitespace-nowrap">步骤（共 {{ cycle.steps.value.length }} 步）</span>
         <span>挡位</span>
-        <span>目标转速</span>
-        <span>时长</span>
-        <span aria-hidden="true"></span>
+        <span class="whitespace-nowrap">转速 RPM</span>
+        <span class="whitespace-nowrap">时长 s</span>
+        <span aria-hidden="true" class="col-span-2"></span>
       </div>
 
       <!-- 步骤单行滚动容器 -->
@@ -366,7 +413,7 @@ const autoJudgeDetail = computed(() =>
             <Input
               v-model="step.name"
               placeholder="名称"
-              class="h-7 w-full min-w-0 px-2 text-xs"
+              class="h-7 w-full min-w-0 px-1.5 text-xs"
               :disabled="cycle.isRunning.value || cycle.isPaused.value"
             />
 
@@ -389,42 +436,49 @@ const autoJudgeDetail = computed(() =>
             </Select>
 
             <!-- 目标转速 -->
-            <InputGroup class="h-7 min-w-0">
-              <InputGroupInput
-                v-model.number="step.targetSpeed"
-                type="number"
-                step="50"
-                min="0"
-                max="12000"
-                :disabled="cycle.isRunning.value || cycle.isPaused.value || step.gear === 3"
-              />
-              <InputGroupAddon align="inline-end">
-                <InputGroupText>RPM</InputGroupText>
-              </InputGroupAddon>
-            </InputGroup>
+            <Input
+              v-model.number="step.targetSpeed"
+              type="number"
+              step="50"
+              min="0"
+              max="12000"
+              aria-label="目标转速 (RPM)"
+              :class="STEP_NUMBER_INPUT"
+              :disabled="cycle.isRunning.value || cycle.isPaused.value || step.gear === 3"
+            />
 
             <!-- 持续时间 -->
-            <InputGroup class="h-7 min-w-0">
-              <InputGroupInput
-                v-model.number="step.durationSeconds"
-                type="number"
-                min="1"
-                max="3600"
-                :disabled="cycle.isRunning.value || cycle.isPaused.value"
-              />
-              <InputGroupAddon align="inline-end">
-                <InputGroupText>s</InputGroupText>
-              </InputGroupAddon>
-            </InputGroup>
+            <Input
+              v-model.number="step.durationSeconds"
+              type="number"
+              min="1"
+              max="3600"
+              aria-label="时长 (s)"
+              :class="STEP_NUMBER_INPUT"
+              :disabled="cycle.isRunning.value || cycle.isPaused.value"
+            />
+
+            <!-- 添加到下一行 -->
+            <Button
+              size="icon"
+              variant="ghost"
+              class="size-6 shrink-0 text-muted-foreground hover:text-primary"
+              :disabled="cycle.isRunning.value || cycle.isPaused.value"
+              title="添加到下一行"
+              aria-label="添加到下一行"
+              @click="openAddStep(index)"
+            >
+              <PlusIcon />
+            </Button>
 
             <!-- 删除按钮 -->
             <Button
               size="icon"
               variant="ghost"
-              class="size-7 shrink-0 text-muted-foreground hover:text-destructive"
+              class="size-6 shrink-0 text-muted-foreground hover:text-destructive"
               :disabled="cycle.isRunning.value || cycle.isPaused.value || cycle.steps.value.length <= 1"
               title="删除该步骤"
-              @click="cycle.removeStep(index)"
+              @click="requestRemoveStep(index)"
             >
               <Trash2Icon data-icon="inline-start" />
             </Button>
@@ -432,6 +486,107 @@ const autoJudgeDetail = computed(() =>
         </div>
       </ScrollArea>
     </div>
+
+    <!-- 在所点行下方添加步骤 -->
+    <Dialog v-model:open="isAddStepOpen">
+      <DialogContent class="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>添加到第 {{ insertAfterIndex + 2 }} 步</DialogTitle>
+          <DialogDescription>已带入上一行的值，修改后确认。</DialogDescription>
+        </DialogHeader>
+
+        <form id="add-cycle-step" class="grid grid-cols-2 gap-4" @submit.prevent="confirmAddStep">
+          <Field>
+            <FieldLabel for="new-step-name">步骤名称</FieldLabel>
+            <Input
+              id="new-step-name"
+              v-model="newStep.name"
+              placeholder="名称"
+              @update:model-value="isNewStepNameEdited = true"
+            />
+          </Field>
+
+          <Field>
+            <FieldLabel for="new-step-gear">挡位</FieldLabel>
+            <Select
+              :model-value="String(newStep.gear)"
+              @update:model-value="(val) => handleGearChange(newStep, val)"
+            >
+              <SelectTrigger id="new-step-gear" class="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  <SelectItem value="1">D 挡正转</SelectItem>
+                  <SelectItem value="2">R 挡反转</SelectItem>
+                  <SelectItem value="3">N 挡缓冲</SelectItem>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          </Field>
+
+          <Field>
+            <FieldLabel for="new-step-speed">目标转速</FieldLabel>
+            <InputGroup>
+              <InputGroupInput
+                id="new-step-speed"
+                v-model.number="newStep.targetSpeed"
+                type="number"
+                step="50"
+                min="0"
+                max="12000"
+                :disabled="newStep.gear === 3"
+              />
+              <InputGroupAddon align="inline-end">
+                <InputGroupText>RPM</InputGroupText>
+              </InputGroupAddon>
+            </InputGroup>
+          </Field>
+
+          <Field>
+            <FieldLabel for="new-step-duration">时长</FieldLabel>
+            <InputGroup>
+              <InputGroupInput
+                id="new-step-duration"
+                v-model.number="newStep.durationSeconds"
+                type="number"
+                min="1"
+                max="3600"
+              />
+              <InputGroupAddon align="inline-end">
+                <InputGroupText>s</InputGroupText>
+              </InputGroupAddon>
+            </InputGroup>
+          </Field>
+        </form>
+
+        <DialogFooter>
+          <DialogClose as-child>
+            <Button variant="outline">取消</Button>
+          </DialogClose>
+          <Button type="submit" form="add-cycle-step">
+            <PlusIcon data-icon="inline-start" />
+            确认添加
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <!-- 删除步骤的二次确认 -->
+    <Dialog v-model:open="isRemoveStepOpen">
+      <DialogContent class="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>确认删除此步骤？</DialogTitle>
+          <DialogDescription>{{ removeStepDescription }}</DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <DialogClose as-child>
+            <Button variant="outline">取消</Button>
+          </DialogClose>
+          <Button variant="destructive" @click="confirmRemoveStep">确认删除</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
 
     <!-- 底部操作按钮区域 -->
     <div class="flex items-center gap-3 pt-1">

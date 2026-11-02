@@ -13,6 +13,9 @@ export interface CycleStep {
   durationSeconds: number
 }
 
+/** 尚未加入序列的步骤，id 在插入时分配 */
+export type CycleStepDraft = Omit<CycleStep, 'id'>
+
 /**
  * 默认工况：正转 1000 / 2000 / 3000 → N 缓冲 → 反转 1000 / 2000 / 3000 → N 缓冲。
  * 反转由 R 挡决定方向，目标转速填正值（后端拒绝负转速）。
@@ -83,7 +86,7 @@ export function useCycleTest() {
       // 读取期间操作员已开始编辑时，以其编辑为准
       if (!saved || saveTimer !== undefined) return
       totalLoops.value = saved.total_loops
-      // 重新分配 id，避免与 addStep 生成的 id 冲突（步骤列表以 id 作 key）
+      // 重新分配 id，避免与 insertStep 生成的 id 冲突（步骤列表以 id 作 key）
       steps.value = saved.steps.map((step) => ({
         id: `step-${nextStepId++}`,
         name: step.name,
@@ -162,20 +165,37 @@ export function useCycleTest() {
     return Math.min(100, Math.max(0, Math.round((totalElapsedSeconds.value / totalDuration) * 100)))
   })
 
-  function addStep() {
-    const lastStep = steps.value.at(-1)
-    const gear: CycleGear = lastStep?.gear === 1 ? 2 : 1
-    const newStep: CycleStep = {
-      id: `step-${nextStepId++}`,
-      name: `${gear === 1 ? '正转' : '反转'} 1000`,
-      gear,
-      targetSpeed: 1000,
-      durationSeconds: 60,
+  /** 校验失败返回提示文字；前缀用于指明是哪一步 */
+  function validateStep(step: CycleStepDraft, prefix: string): string | null {
+    if (!step.name.trim()) {
+      return `${prefix} 的名称不能为空`
     }
-    steps.value.push(newStep)
-    toast.success('已添加工况步骤', {
-      description: `步骤 ${steps.value.length}：${newStep.name} (${newStep.gear === 1 ? 'D挡正向' : 'R挡反向'} ${newStep.targetSpeed} RPM, ${newStep.durationSeconds}s)`,
-    })
+    if (!Number.isInteger(step.durationSeconds) || step.durationSeconds < 1 || step.durationSeconds > 3600) {
+      return `${prefix} 的时长必须是 1 至 3600 秒的整数`
+    }
+    if (!Number.isInteger(step.targetSpeed) || step.targetSpeed < 0 || step.targetSpeed > 12000) {
+      return `${prefix} 的目标转速必须是 0 至 12000 RPM 的正整数`
+    }
+    if ((step.gear === 1 || step.gear === 2) && step.targetSpeed <= 0) {
+      return `${prefix} 为 ${step.gear === 1 ? 'D 挡正转' : 'R 挡反转'}时目标转速必须大于 0 RPM`
+    }
+    if (step.gear === 3 && step.targetSpeed !== 0) {
+      return `${prefix} 为 N 挡时目标转速必须为 0`
+    }
+    return null
+  }
+
+  /** 把新步骤插到第 afterIndex 行下方；校验不通过时提示并返回 false */
+  function insertStep(afterIndex: number, draft: CycleStepDraft): boolean {
+    const position = afterIndex + 1
+    const error = validateStep(draft, `步骤 ${position + 1}`)
+    if (error) {
+      toast.warning(error)
+      return false
+    }
+    steps.value.splice(position, 0, { ...draft, name: draft.name.trim(), id: `step-${nextStepId++}` })
+    toast.success(`已添加为第 ${position + 1} 步`)
+    return true
   }
 
   function removeStep(index: number) {
@@ -205,25 +225,9 @@ export function useCycleTest() {
       return null
     }
     for (const [index, step] of steps.value.entries()) {
-      const prefix = `步骤 ${index + 1}`
-      if (!step.name.trim()) {
-        toast.warning(`${prefix} 的名称不能为空`)
-        return null
-      }
-      if (!Number.isInteger(step.durationSeconds) || step.durationSeconds < 1 || step.durationSeconds > 3600) {
-        toast.warning(`${prefix} 的时长必须是 1 至 3600 秒的整数`)
-        return null
-      }
-      if (!Number.isInteger(step.targetSpeed) || step.targetSpeed < 0 || step.targetSpeed > 12000) {
-        toast.warning(`${prefix} 的目标转速必须是 0 至 12000 RPM 的正整数`)
-        return null
-      }
-      if ((step.gear === 1 || step.gear === 2) && step.targetSpeed <= 0) {
-        toast.warning(`${prefix} 为 ${step.gear === 1 ? 'D 挡正转' : 'R 挡反转'}时目标转速必须大于 0 RPM`)
-        return null
-      }
-      if (step.gear === 3 && step.targetSpeed !== 0) {
-        toast.warning(`${prefix} 为 N 挡时目标转速必须为 0`)
+      const error = validateStep(step, `步骤 ${index + 1}`)
+      if (error) {
+        toast.warning(error)
         return null
       }
     }
@@ -327,7 +331,7 @@ export function useCycleTest() {
     singleLoopTotalDuration,
     stepProgressPercent,
     overallProgressPercent,
-    addStep,
+    insertStep,
     removeStep,
     startTest,
     pauseTest,

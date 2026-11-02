@@ -17,6 +17,7 @@ vi.mock('@/api/axle', async (importOriginal) => {
 })
 
 const SAVE_DEBOUNCE_MS = 300
+const NEW_STEP = { name: '正转 1500', gear: 1, targetSpeed: 1500, durationSeconds: 30 } as const
 
 describe('useCycleTest composable', () => {
   /** 模拟后端保存的配置 */
@@ -116,7 +117,7 @@ describe('useCycleTest composable', () => {
     }
     const cycle = useCycleTest()
     await flushSave()
-    cycle.addStep()
+    cycle.insertStep(0, NEW_STEP)
 
     const ids = cycle.steps.value.map((step) => step.id)
     expect(new Set(ids).size).toBe(ids.length)
@@ -216,18 +217,55 @@ describe('useCycleTest composable', () => {
     expect(cycle.status.value).toBe('idle')
   })
 
-  it('支持步骤的增加与删除，并阻止删除最后一个步骤', () => {
+  it('新步骤插到所点行的下方，其余步骤顺序不变', () => {
     const toastSuccessSpy = vi.spyOn(toast, 'success')
     const cycle = useCycleTest()
+    const before = cycle.steps.value.map((step) => step.id)
+
+    expect(cycle.insertStep(1, { ...NEW_STEP, name: '  正转 1500  ' })).toBe(true)
+
+    const ids = cycle.steps.value.map((step) => step.id)
+    expect(ids.filter((id) => before.includes(id))).toEqual(before)
+    expect(ids[2]).not.toBe(before[2])
+    expect(cycle.steps.value[2]).toMatchObject({ ...NEW_STEP, name: '正转 1500' })
+    expect(toastSuccessSpy).toHaveBeenCalledWith('已添加为第 3 步')
+
+    expect(cycle.insertStep(cycle.steps.value.length - 1, NEW_STEP)).toBe(true)
+    expect(cycle.steps.value.at(-1)).toMatchObject(NEW_STEP)
+  })
+
+  it('非法步骤不插入并提示', () => {
+    const toastWarningSpy = vi.spyOn(toast, 'warning')
+    const cycle = useCycleTest()
     const initialLen = cycle.steps.value.length
-    cycle.addStep()
-    expect(cycle.steps.value.length).toBe(initialLen + 1)
-    expect(toastSuccessSpy).toHaveBeenCalledWith(
-      '已添加工况步骤',
-      expect.objectContaining({
-        description: expect.stringContaining(`步骤 ${initialLen + 1}`),
-      }),
-    )
+
+    expect(cycle.insertStep(0, { ...NEW_STEP, durationSeconds: 0 })).toBe(false)
+    expect(cycle.insertStep(0, { ...NEW_STEP, targetSpeed: 0 })).toBe(false)
+    expect(cycle.insertStep(0, { ...NEW_STEP, gear: 3 })).toBe(false)
+    expect(cycle.insertStep(0, { ...NEW_STEP, name: '  ' })).toBe(false)
+
+    expect(cycle.steps.value).toHaveLength(initialLen)
+    expect(toastWarningSpy).toHaveBeenCalledTimes(4)
+    expect(toastWarningSpy).toHaveBeenCalledWith('步骤 2 的时长必须是 1 至 3600 秒的整数')
+    expect(toastWarningSpy).toHaveBeenCalledWith('步骤 2 为 N 挡时目标转速必须为 0')
+  })
+
+  it('插入的步骤会自动保存', async () => {
+    const cycle = useCycleTest()
+    await flushSave()
+    cycle.insertStep(1, NEW_STEP)
+    await flushSave()
+
+    expect(savedConfig?.steps[2]).toEqual({
+      name: NEW_STEP.name,
+      gear: NEW_STEP.gear,
+      target_speed: NEW_STEP.targetSpeed,
+      duration_seconds: NEW_STEP.durationSeconds,
+    })
+  })
+
+  it('支持步骤删除，并阻止删除最后一个步骤', () => {
+    const cycle = useCycleTest()
 
     while (cycle.steps.value.length > 1) {
       cycle.removeStep(0)
