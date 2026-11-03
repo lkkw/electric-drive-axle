@@ -51,6 +51,8 @@ class StationClient(Protocol):
 
     def disconnect(self) -> None: ...
 
+    def reconnect(self) -> None: ...
+
     def read_station(self) -> bytearray: ...
 
     def update(self, offset: int, size: int, transform: ByteTransform) -> None: ...
@@ -90,34 +92,46 @@ class SnapStationClient:
         self._lock = threading.Lock()
         self._client = None
 
-    def connect(self) -> None:
+    def _open(self):  # noqa: ANN202 - snap7 类型在延迟导入中
         import snap7  # 延迟导入：仿真与测试不依赖真实协议栈
 
+        client = snap7.client.Client()
+        try:
+            client.connect(self.ip, self.rack, self.slot)
+        except Exception as err:
+            try:
+                client.disconnect()
+            except Exception:
+                pass
+            raise PlcClientError(
+                f"连接 PLC {self.ip} (rack={self.rack}, slot={self.slot}) 失败: {err}"
+            ) from err
+        apply_io_timeout(client, SNAP7_IO_TIMEOUT_SECONDS)
+        return client
+
+    def connect(self) -> None:
         with self._lock:
             if self._client is not None:
                 return
-            client = snap7.client.Client()
-            try:
-                client.connect(self.ip, self.rack, self.slot)
-            except Exception as err:
-                try:
-                    client.disconnect()
-                except Exception:
-                    pass
-                raise PlcClientError(
-                    f"连接 PLC {self.ip} (rack={self.rack}, slot={self.slot}) 失败: {err}"
-                ) from err
-            apply_io_timeout(client, SNAP7_IO_TIMEOUT_SECONDS)
-            self._client = client
+            self._client = self._open()
 
     def disconnect(self) -> None:
         with self._lock:
-            client, self._client = self._client, None
-            if client is not None:
-                try:
-                    client.disconnect()
-                except Exception:
-                    pass
+            self._close()
+
+    def _close(self) -> None:
+        client, self._client = self._client, None
+        if client is not None:
+            try:
+                client.disconnect()
+            except Exception:
+                pass
+
+    def reconnect(self) -> None:
+        """丢弃旧连接并新建。snap7 一次收发超时后连接即失效，只有重建才能恢复。"""
+        with self._lock:
+            self._close()
+            self._client = self._open()
 
     def _require_client(self):  # noqa: ANN202 - snap7 类型在延迟导入中
         if self._client is None:
@@ -176,6 +190,9 @@ class SimulatedStationClient:
 
     def disconnect(self) -> None:
         self._connected = False
+
+    def reconnect(self) -> None:
+        self._connected = True
 
     def _require_connected(self) -> None:
         if not self._connected:
