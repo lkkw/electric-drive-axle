@@ -92,10 +92,13 @@ LINK_FAILURE_ERROR_COUNT = 10
 LINK_FAILURE_SECONDS = 1.0
 # 空闲时（未使能、无循环测试）驱动异常只提示不断开：控制器未上电时总线上无节点应答，
 # USBCAN 反复重发会让发送调用超时，这不是 USBCAN 掉线。
-# 空闲时（未使能、无循环测试）超过此时长收不到任何报文即复位 CAN 通道，并按同一间隔重试。
-# 换台拔插接插件后通道可能卡在 Bus-Off，复位后新控制器的报文才能收到。
+# 空闲时（未使能、无循环测试）超过此时长收不到任何报文即检查通道：确认总线关闭或发送
+# 无应答才复位，并按同一间隔重试。换台拔插接插件后通道可能卡在 Bus-Off，复位后才能收到报文。
 BUS_RECOVERY_IDLE_SECONDS = 2.0
-BUS_RECOVERY_POLL_SECONDS = 0.5
+# 进入等待控制器后的检查间隔：无节点应答时复位不影响任何设备，查得越勤，气缸接上瞬间
+# CAN 卡恰好卡在 Bus-Off 时 VCU_11 缺失的时间越短
+BUS_RECOVERY_CHECK_SECONDS = 0.5
+BUS_RECOVERY_POLL_SECONDS = 0.1
 BUS_WAITING_CONTROLLER_WARNING = (
     "暂未收到控制器报文，软件正在自动重试。换台时接好接插件并给控制器上电后，报文会自动恢复。"
 )
@@ -248,7 +251,11 @@ class AxleManager:
         self._bus_warning: str | None = None
         # 空闲总线自动恢复：最近一次收到报文或尝试复位的单调时间，及是否正在等待控制器
         self._last_bus_activity: float = 0.0
+        # 最近一次 VCU_11 被硬件接受的时间：总线上无节点应答时发送会持续失败
+        self._last_tx_ok: float = 0.0
         self._waiting_for_controller: bool = False
+        self._waiting_since: float = 0.0
+        self._bus_restart_count: int = 0
         self._link_failure_task: asyncio.Task[None] | None = None
         self._soft_stop_task: asyncio.Task[None] | None = None
         self._emergency_listeners: list[EmergencyListener] = []
@@ -356,6 +363,7 @@ class AxleManager:
             self._link_error = None
             self._bus_warning = None
             self._last_bus_activity = time.monotonic()
+            self._last_tx_ok = time.monotonic()
             self._waiting_for_controller = False
 
             # 2. 启动 10ms 发送循环与高频接收循环
@@ -441,9 +449,7 @@ class AxleManager:
             self._mcu_tbox_last_rx_timestamp = None
             self._enable_since = None
             tasks_to_cancel = [
-                t
-                for t in (self._tx_task, self._rx_task, self._bus_recovery_task)
-                if t is not None
+                t for t in (self._tx_task, self._rx_task, self._bus_recovery_task) if t is not None
             ]
             self._tx_task = None
             self._rx_task = None
@@ -1726,6 +1732,7 @@ class AxleManager:
                         self._note_driver_success(source)
                         if s:
                             self._tx_frame_count += 1
+                            self._last_tx_ok = time.monotonic()
                             any_success = True
                         else:
                             # 驱动正常返回但硬件未接收：通常为总线无应答或发送缓冲区满。
@@ -1823,14 +1830,21 @@ class AxleManager:
             logger.exception("CAN 接收循环发生未捕获异常: %s", rx_err)
             self._schedule_link_failure(f"CAN 接收循环异常终止: {rx_err}")
 
-    def _should_recover_bus(self) -> bool:
-        """空闲且长时间收不到报文时才允许复位通道；测试中断联仍走链路故障停机。"""
+    def _bus_idle(self) -> bool:
+        """空闲（未使能、无循环测试）且长时间收不到报文；测试中断联仍走链路故障停机。
+
+        首次判定需 2 s 无报文；进入等待控制器后每 0.5 s 检查一次。
+        """
+        if self._waiting_for_controller:
+            interval = BUS_RECOVERY_CHECK_SECONDS
+        else:
+            interval = BUS_RECOVERY_IDLE_SECONDS
         return (
             self._connected
             and not self._disconnecting
             and not self._control_active()
             and not self.is_soft_stopping
-            and time.monotonic() - self._last_bus_activity >= BUS_RECOVERY_IDLE_SECONDS
+            and time.monotonic() - self._last_bus_activity >= interval
         )
 
     async def _bus_recovery_loop(self) -> None:
@@ -1838,25 +1852,76 @@ class AxleManager:
         try:
             while self._is_transmitting:
                 await asyncio.sleep(BUS_RECOVERY_POLL_SECONDS)
-                if self._should_recover_bus():
-                    await self._recover_bus()
+                if self._bus_idle():
+                    await self._handle_idle_bus()
         except asyncio.CancelledError:
             raise
         except Exception as err:
             logger.exception("CAN 总线自动恢复任务异常退出: %s", err)
 
-    async def _recover_bus(self) -> None:
-        """复位 CAN 通道；持有生命周期锁，避免与断开、重连同时操作句柄。"""
+    async def _read_bus_errors(self) -> tuple[bool, str]:
+        """读取各通道错误状态，返回 (是否有通道总线关闭, 日志用描述)。"""
+        bus_off = False
+        details: list[str] = []
+        for ch in self._channels():
+            try:
+                info = await self._driver.read_channel_error(ch)
+            except Exception as err:
+                details.append(f"通道 {ch} 错误状态读取失败: {err}")
+                continue
+            bus_off = bus_off or info.bus_off
+            details.append(f"通道 {ch} {info.describe()}")
+        return bus_off, "；".join(details)
+
+    async def _handle_idle_bus(self) -> None:
+        """只在确认 CAN 卡卡死时复位通道。
+
+        - 总线关闭 (Bus-Off)：CAN 卡已停止收发，复位；
+        - 发送持续无应答：总线上没有节点在听（控制器未接或未上电），复位不会打断任何报文；
+        - 发送正常：控制器在线并在应答（例如刚上电、尚未开始发报文），绝不复位，
+          否则 VCU_11 中断会让控制器报“VCU 节点丢失”。
+
+        持有生命周期锁，避免与断开、重连同时操作句柄。
+        """
         async with self._lifecycle_lock:
-            if not self._should_recover_bus():
+            if not self._bus_idle():
                 return
-            self._last_bus_activity = time.monotonic()
+            now = time.monotonic()
+            bus_off, error_detail = await self._read_bus_errors()
+            tx_silent_s = now - self._last_tx_ok
+            tx_stalled = tx_silent_s >= BUS_RECOVERY_IDLE_SECONDS
+            # 下一次判定在一个检查间隔之后
+            self._last_bus_activity = now
             if not self._waiting_for_controller:
                 self._waiting_for_controller = True
+                self._waiting_since = now
+                self._bus_restart_count = 0
                 events.warning(
-                    "CAN 总线 %.0f s 无报文，开始自动恢复并等待控制器",
+                    "CAN 总线 %.0f s 无报文，等待控制器。发送%s；%s",
                     BUS_RECOVERY_IDLE_SECONDS,
+                    f"已 {tx_silent_s:.1f} s 无应答" if tx_stalled else "有应答",
+                    error_detail,
                 )
+
+            if not (bus_off or tx_stalled):
+                self._log_throttled(
+                    "bus_idle_no_restart",
+                    logging.INFO,
+                    "CAN 无报文但发送有应答（控制器在线），不复位通道；%s",
+                    error_detail,
+                )
+                return
+
+            reason = "总线关闭 (Bus-Off)" if bus_off else f"发送 {tx_silent_s:.1f} s 无应答"
+            self._bus_restart_count += 1
+            if self._bus_restart_count == 1:
+                events.warning("CAN 通道开始自动复位，原因: %s；%s", reason, error_detail)
+            logger.warning(
+                "CAN 通道第 %d 次自动复位，原因: %s；%s",
+                self._bus_restart_count,
+                reason,
+                error_detail,
+            )
             for ch in self._channels():
                 try:
                     await self._driver.restart_channel(ch)
@@ -1864,7 +1929,7 @@ class AxleManager:
                     self._log_throttled(
                         f"bus_recovery{ch}",
                         logging.WARNING,
-                        "CAN 通道 %d 自动恢复失败: %s",
+                        "CAN 通道 %d 自动复位失败: %s",
                         ch,
                         err,
                     )
@@ -1876,7 +1941,11 @@ class AxleManager:
         self._last_bus_activity = time.monotonic()
         if self._waiting_for_controller:
             self._waiting_for_controller = False
-            events.info("已收到控制器报文，CAN 总线自动恢复完成")
+            events.info(
+                "已收到控制器报文，CAN 通讯恢复：等待 %.1f s，期间复位通道 %d 次",
+                time.monotonic() - self._waiting_since,
+                self._bus_restart_count,
+            )
 
         for frame in frames:
             # 仅处理有效的数据帧 (8 字节)

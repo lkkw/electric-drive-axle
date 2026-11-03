@@ -32,7 +32,12 @@ from app.core.can.zlgcan_types import (
     P_ZCAN_CHANNEL_ERR_INFO,
     P_ZCAN_CHANNEL_INIT_CONFIG,
     P_ZCAN_DEVICE_INFO,
+    ZCAN_CHANNEL_ERR_INFO,
     ZCAN_CHANNEL_INIT_CONFIG,
+    ZCAN_ERROR_CAN_BUSERR,
+    ZCAN_ERROR_CAN_BUSOFF,
+    ZCAN_ERROR_CAN_ERRALARM,
+    ZCAN_ERROR_CAN_PASSIVE,
     ZCAN_STATUS_OK,
     ZCAN_TYPE_CAN,
     P_ZCAN_Receive_Data,
@@ -71,6 +76,34 @@ class CanRawFrame:
     is_extended: bool  # 是否为扩展帧
     is_remote: bool  # 是否为远程帧
     timestamp: int  # 硬件微秒时间戳
+
+
+@dataclass(slots=True, frozen=True)
+class CanChannelErrorInfo:
+    """ZCAN_ReadChannelErrInfo 读到的通道错误状态。"""
+
+    error_code: int
+    passive_err_data: bytes  # 按周立功手册含错误捕捉与收发错误计数，具体字节以实测为准
+
+    @property
+    def bus_off(self) -> bool:
+        return bool(self.error_code & ZCAN_ERROR_CAN_BUSOFF)
+
+    def describe(self) -> str:
+        flags = [
+            name
+            for bit, name in (
+                (ZCAN_ERROR_CAN_BUSOFF, "总线关闭"),
+                (ZCAN_ERROR_CAN_PASSIVE, "错误被动"),
+                (ZCAN_ERROR_CAN_ERRALARM, "错误告警"),
+                (ZCAN_ERROR_CAN_BUSERR, "总线错误"),
+            )
+            if self.error_code & bit
+        ]
+        return (
+            f"error_code=0x{self.error_code:04X}（{'、'.join(flags) or '无'}）"
+            f" passive_ErrData={self.passive_err_data.hex(' ')}"
+        )
 
 
 @contextmanager
@@ -438,6 +471,30 @@ class ZlgCanDriver:
                 if ret != ZCAN_STATUS_OK:
                     raise CanChannelNotOpenError(f"{step}通道 {channel} 失败。")
 
+    async def read_channel_error(self, channel: int = 0) -> CanChannelErrorInfo:
+        """读取通道错误状态（是否总线关闭、错误被动等）。
+
+        :param channel: 通道号
+        """
+        chn_handle = self._channel_handles.get(channel)
+        if not chn_handle:
+            raise CanChannelNotOpenError(f"通道 {channel} 未开启，无法读取错误状态。")
+        info = ZCAN_CHANNEL_ERR_INFO()
+        async with self._rx_lock:
+            ret = await self._call(
+                _IO_CALL_TIMEOUT,
+                f"读取通道 {channel} 错误状态",
+                self._dll.ZCAN_ReadChannelErrInfo,
+                chn_handle,
+                byref(info),
+            )
+        if ret != ZCAN_STATUS_OK:
+            raise CanDriverError(f"读取通道 {channel} 错误状态失败。")
+        return CanChannelErrorInfo(
+            error_code=int(info.error_code),
+            passive_err_data=bytes(info.passive_ErrData),
+        )
+
     async def receive(
         self,
         channel: int = 0,
@@ -584,6 +641,9 @@ class UnavailableCanDriver(ZlgCanDriver):
         raise self._unavailable()
 
     async def restart_channel(self, channel: int = 0) -> None:
+        raise self._unavailable()
+
+    async def read_channel_error(self, channel: int = 0) -> CanChannelErrorInfo:
         raise self._unavailable()
 
     async def clear_buffer(self, channel: int = 0) -> None:

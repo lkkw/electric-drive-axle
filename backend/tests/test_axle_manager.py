@@ -13,7 +13,7 @@ from app.core.can.constants import (
     VcuMcuEnCmd,
     VcuWorkModeReq,
 )
-from app.core.can.driver import CanDriverError, CanRawFrame, ZlgCanDriver
+from app.core.can.driver import CanChannelErrorInfo, CanDriverError, CanRawFrame, ZlgCanDriver
 from app.schemas.axle import (
     AxleSafetyConfig,
     CanConnectRequest,
@@ -36,6 +36,9 @@ def create_mock_driver() -> MagicMock:
     driver.transmit = AsyncMock(return_value=True)
     driver.receive = AsyncMock(return_value=[])
     driver.restart_channel = AsyncMock()
+    driver.read_channel_error = AsyncMock(
+        return_value=CanChannelErrorInfo(error_code=0, passive_err_data=bytes(3))
+    )
     driver.close_channel = AsyncMock()
     driver.close_device = AsyncMock()
     driver.is_device_open = True
@@ -874,9 +877,17 @@ def test_idle_bus_no_response_warns_without_disconnect() -> None:
     asyncio.run(run_test())
 
 
-def expire_bus_idle(manager: AxleManager) -> None:
-    """把最近总线活动时间推到空闲阈值之前，免去测试真实等待。"""
+def expire_bus_idle(manager: AxleManager, *, tx_silent: bool = False) -> None:
+    """把最近收到报文的时间推到空闲阈值之前，免去测试真实等待。
+
+    tx_silent 同时推后发送被接受的时间，配合发送失败模拟“无节点应答”。
+    """
     manager._last_bus_activity -= axle_manager_module.BUS_RECOVERY_IDLE_SECONDS
+    if tx_silent:
+        manager._last_tx_ok -= axle_manager_module.BUS_RECOVERY_IDLE_SECONDS
+
+
+NO_ACK = CanDriverError("CAN 报文发送超时（0.5s），硬件可能已断开。")
 
 
 @pytest.fixture
@@ -885,8 +896,8 @@ def fast_bus_recovery(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.usefixtures("fast_bus_recovery")
-def test_idle_bus_recovers_after_controller_swap() -> None:
-    """换台：空闲无报文时自动复位通道并显示等待控制器，新控制器报文到达后恢复。"""
+def test_idle_bus_recovers_after_controller_swap(caplog: pytest.LogCaptureFixture) -> None:
+    """换台：无报文且发送无应答（控制器未接）时复位通道，新控制器报文到达后恢复。"""
 
     async def run_test() -> None:
         driver = create_mock_driver()
@@ -894,9 +905,11 @@ def test_idle_bus_recovers_after_controller_swap() -> None:
         await manager.connect(CanConnectRequest())
         assert manager.get_telemetry().waiting_for_controller is False
 
-        expire_bus_idle(manager)
+        driver.transmit.side_effect = NO_ACK
+        expire_bus_idle(manager, tx_silent=True)
         await asyncio.sleep(0.05)
         driver.restart_channel.assert_awaited_once_with(0)
+        assert any("无应答" in r.getMessage() for r in caplog.records if "复位" in r.getMessage())
         telemetry = manager.get_telemetry()
         assert manager.is_connected
         assert telemetry.waiting_for_controller is True
@@ -904,15 +917,17 @@ def test_idle_bus_recovers_after_controller_swap() -> None:
         assert telemetry.link_error is None
 
         # 仍无报文：按同一间隔继续重试
-        expire_bus_idle(manager)
+        expire_bus_idle(manager, tx_silent=True)
         await asyncio.sleep(0.05)
         assert driver.restart_channel.await_count == 2
 
+        driver.transmit.side_effect = None
         driver.receive.side_effect = lambda **_: [benign_mcu_2_frame()]
         await asyncio.sleep(0.05)
         telemetry = manager.get_telemetry()
         assert telemetry.waiting_for_controller is False
         assert telemetry.bus_warning is None
+        assert any("复位通道 2 次" in r.getMessage() for r in caplog.records)
 
         # 报文正常时不再复位
         driver.restart_channel.reset_mock()
@@ -920,8 +935,98 @@ def test_idle_bus_recovers_after_controller_swap() -> None:
         driver.restart_channel.assert_not_awaited()
         await manager.disconnect()
 
+    with caplog.at_level(logging.INFO):
+        asyncio.run(run_test())
+
+
+@pytest.mark.usefixtures("fast_bus_recovery")
+def test_waiting_retries_at_short_check_interval(monkeypatch: pytest.MonkeyPatch) -> None:
+    """进入等待控制器后按短间隔复查：无应答时持续复位，控制器一应答就停止复位。"""
+    monkeypatch.setattr(axle_manager_module, "BUS_RECOVERY_CHECK_SECONDS", 0.05)
+
+    async def run_test() -> None:
+        driver = create_mock_driver()
+        manager = AxleManager(driver=driver)
+        await manager.connect(CanConnectRequest())
+
+        driver.transmit.side_effect = NO_ACK
+        expire_bus_idle(manager, tx_silent=True)
+        await asyncio.sleep(0.3)
+        assert driver.restart_channel.await_count >= 3
+
+        # 气缸接上、控制器上电并应答：不再复位
+        driver.transmit.side_effect = None
+        await asyncio.sleep(0.05)
+        driver.restart_channel.reset_mock()
+        await asyncio.sleep(0.3)
+        driver.restart_channel.assert_not_awaited()
+        assert manager.get_telemetry().waiting_for_controller is True
+        await manager.disconnect()
+
     asyncio.run(run_test())
 
+
+@pytest.mark.usefixtures("fast_bus_recovery")
+def test_first_check_still_waits_full_idle_period() -> None:
+    """未进入等待时仍需 2 s 无报文才检查，正常运行中的短暂空档不会触发。"""
+
+    async def run_test() -> None:
+        driver = create_mock_driver()
+        driver.transmit.side_effect = NO_ACK
+        manager = AxleManager(driver=driver)
+        await manager.connect(CanConnectRequest())
+        await asyncio.sleep(0.6)
+        driver.read_channel_error.assert_not_awaited()
+        driver.restart_channel.assert_not_awaited()
+        assert manager.get_telemetry().waiting_for_controller is False
+        await manager.disconnect()
+
+    asyncio.run(run_test())
+
+
+@pytest.mark.usefixtures("fast_bus_recovery")
+def test_no_restart_while_controller_acks_without_sending() -> None:
+    """控制器刚上电、在应答但还没发报文：只显示等待控制器，绝不复位打断 VCU_11。"""
+
+    async def run_test() -> None:
+        driver = create_mock_driver()
+        manager = AxleManager(driver=driver)
+        await manager.connect(CanConnectRequest())
+
+        for _ in range(3):
+            expire_bus_idle(manager)
+            await asyncio.sleep(0.05)
+        driver.restart_channel.assert_not_awaited()
+        assert driver.read_channel_error.await_count >= 1
+        assert manager.get_telemetry().waiting_for_controller is True
+        await manager.disconnect()
+
+    asyncio.run(run_test())
+
+
+@pytest.mark.usefixtures("fast_bus_recovery")
+def test_bus_off_triggers_restart_even_if_transmit_accepted(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """通道报告总线关闭时复位，即使发送调用仍返回成功。"""
+
+    async def run_test() -> None:
+        driver = create_mock_driver()
+        driver.read_channel_error.return_value = CanChannelErrorInfo(
+            error_code=0x0020, passive_err_data=bytes([0, 0, 255])
+        )
+        manager = AxleManager(driver=driver)
+        await manager.connect(CanConnectRequest())
+
+        expire_bus_idle(manager)
+        await asyncio.sleep(0.05)
+        driver.restart_channel.assert_awaited_once_with(0)
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("Bus-Off" in m and "0x0020" in m for m in messages)
+        await manager.disconnect()
+
+    with caplog.at_level(logging.INFO):
+        asyncio.run(run_test())
 
 @pytest.mark.usefixtures("fast_bus_recovery")
 def test_bus_recovery_skipped_while_motor_enabled() -> None:
@@ -957,7 +1062,8 @@ def test_bus_recovery_failure_keeps_connection_and_stops_on_disconnect() -> None
         manager = AxleManager(driver=driver)
         await manager.connect(CanConnectRequest())
 
-        expire_bus_idle(manager)
+        driver.transmit.side_effect = NO_ACK
+        expire_bus_idle(manager, tx_silent=True)
         await asyncio.sleep(0.05)
         assert manager.is_connected
         assert manager.get_telemetry().waiting_for_controller is True
