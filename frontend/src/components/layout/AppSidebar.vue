@@ -33,7 +33,7 @@ const route = useRoute()
 // ---------------------------------------------------------------------------
 const navItems = [
   {
-    title: 'CAN 通讯控制',
+    title: '通讯控制',
     url: '/can',
     icon: Radio,
   },

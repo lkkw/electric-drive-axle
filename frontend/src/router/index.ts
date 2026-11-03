@@ -17,7 +17,7 @@ const router = createRouter({
           path: 'can',
           name: 'can-comm',
           component: () => import('@/views/CanCommView.vue'),
-          meta: { title: 'CAN 通讯控制' },
+          meta: { title: '通讯控制' },
         },
         {
           path: 'power',
