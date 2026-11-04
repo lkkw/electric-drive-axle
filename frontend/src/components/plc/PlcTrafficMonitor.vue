@@ -9,7 +9,6 @@ import { Button } from '@/components/ui/button'
 import {
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
@@ -127,16 +126,22 @@ onBeforeUnmount(() => {
     <CardHeader class="border-b pb-3">
       <div class="flex flex-wrap items-center justify-between gap-2">
         <CardTitle>PLC 通信监视</CardTitle>
-        <Badge :variant="plcOnline ? 'success' : 'secondary'">
-          {{ plcOnline ? `已采样 ${snapshot?.updated_at}` : 'PLC 未连接，暂无数据' }}
+        <!-- 采样时间每秒刷新，属于常态信息：描边徽章 + 小绿点，不用实心底色 -->
+        <Badge variant="outline" class="gap-1.5 font-normal text-muted-foreground">
+          <span
+            class="size-1.5 rounded-full"
+            :class="plcOnline ? 'bg-success' : 'bg-muted-foreground/40'"
+            aria-hidden="true"
+          />
+          <span v-if="plcOnline">
+            已采样 <span class="font-mono tabular-nums text-foreground">{{ snapshot?.updated_at }}</span>
+          </span>
+          <span v-else>PLC 未连接，暂无数据</span>
         </Badge>
       </div>
-      <CardDescription>
-        软件在后台自动与 PLC 收发的全部内容（DB40 · dbPC），每秒刷新，联调时用来核对双方信号。
-      </CardDescription>
     </CardHeader>
 
-    <CardContent class="flex flex-col gap-5 pt-5">
+    <CardContent class="flex flex-col gap-5">
       <!-- 实时点表 -->
       <div class="flex flex-col gap-3">
         <span class="text-sm text-muted-foreground">实时点表（刚变化的值会高亮 2 秒）</span>

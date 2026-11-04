@@ -7,10 +7,14 @@
   避免每秒的心跳把“请求上电 = 0”也记一遍。
 - 读取：常驻监视每 0.2 s 读取整个工位时调用 ``sample``，PLC 反馈区数值变化时记一条。
   不额外产生 PLC 通讯。
-- 只在内存中保留。心跳每秒都有，单独存放并只保留最近 ``MAX_FREQUENT_ENTRIES`` 条，
-  避免把上电、Safe 变化等重要记录挤掉。
+- 内存中保留供“通讯控制”页面展示。心跳每秒都有，单独存放并只保留最近
+  ``MAX_FREQUENT_ENTRIES`` 条，避免把上电、Safe 变化等重要记录挤掉。
+- 非心跳/转速/温度等高频点位同时落盘到 ``plc_traffic.log``（见
+  ``app.core.logging_setup``），用于事后查清是上位机还是 PLC 侧的责任；
+  高频点位只在内存中保留，不写盘，避免日志被每秒的心跳刷屏。
 """
 
+import logging
 import struct
 import threading
 from collections import deque
@@ -18,10 +22,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal
 
+from app.core.logging_setup import PLC_TRAFFIC_LOGGER_NAME
 from app.core.plc import points as p
 
 MAX_ENTRIES = 500
 MAX_FREQUENT_ENTRIES = 200
+
+_traffic_logger = logging.getLogger(PLC_TRAFFIC_LOGGER_NAME)
 
 Direction = Literal["write", "read"]
 PointType = Literal["BOOL", "INT", "REAL", "STRING"]
@@ -129,6 +136,17 @@ class PlcTrafficLog:
                 "frequent": point.frequent,
             }
         )
+        if not point.frequent:
+            change = f"{previous}→{value}" if previous is not None else f"{value}"
+            tag = f" [{source}]" if source else ""
+            _traffic_logger.info(
+                "%-5s %-24s %s=%s%s",
+                point.direction.upper(),
+                point.address,
+                point.label,
+                change,
+                tag,
+            )
 
     def record_write(
         self,

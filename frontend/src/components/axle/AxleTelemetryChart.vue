@@ -3,12 +3,6 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import VChart from 'vue-echarts'
 import 'vue-echarts/style.css'
 import '@/components/charts/echarts'
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card'
 import { resolveCssColor } from '@/lib/chart-theme'
 import { useAxleStore, type HistoryPoint } from '@/stores/useAxleStore'
 
@@ -68,11 +62,13 @@ const chartOption = computed(() => {
         fontSize: 12,
       },
     },
+    // 左右只留刻度文字所需的宽度（containLabel），横轴尽量贴近卡片两侧
     grid: {
-      top: 36,
-      left: 55,
-      right: 55,
-      bottom: 25,
+      top: 32,
+      left: 0,
+      right: 0,
+      bottom: 0,
+      containLabel: true,
     },
     xAxis: {
       type: 'category',
@@ -82,9 +78,9 @@ const chartOption = computed(() => {
       axisLabel: { fontSize: 10, color: colors.muted },
     },
     yAxis: [
+      // 轴名省略：单位已在图例中，坐标轴颜色与曲线一致
       {
         type: 'value',
-        name: '转速 (RPM)',
         position: 'left',
         axisLine: { show: true, lineStyle: { color: colors.speed } },
         axisLabel: { color: colors.speed, fontSize: 11 },
@@ -92,7 +88,6 @@ const chartOption = computed(() => {
       },
       {
         type: 'value',
-        name: '转矩 (Nm)',
         position: 'right',
         axisLine: { show: true, lineStyle: { color: colors.torque } },
         axisLabel: { color: colors.torque, fontSize: 11 },
@@ -139,21 +134,15 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <Card class="border-border shadow-xs">
-    <CardHeader class="pb-3 border-b bg-muted/20">
-      <CardTitle class="text-base font-semibold">
-        转速与转矩曲线
-      </CardTitle>
-    </CardHeader>
-
-    <CardContent>
-      <div class="h-[280px] w-full">
-        <VChart
-          :option="chartOption"
-          autoresize
-          class="size-full"
-        />
-      </div>
-    </CardContent>
-  </Card>
+  <!-- 嵌在 MCU 实时反馈卡片底部，占满卡片剩余高度；左侧内容较短时保留最小高度 -->
+  <section class="flex min-h-[220px] flex-1 flex-col gap-2">
+    <h3 class="text-sm font-medium text-foreground">转速与转矩曲线</h3>
+    <div class="min-h-0 w-full flex-1">
+      <VChart
+        :option="chartOption"
+        autoresize
+        class="size-full"
+      />
+    </div>
+  </section>
 </template>

@@ -1,5 +1,6 @@
 """Environment-backed application settings without an extra dependency."""
 
+import sys
 from dataclasses import dataclass
 from functools import lru_cache
 from os import getenv
@@ -34,6 +35,16 @@ class Settings:
         return self.data_dir / "safety_config.json"
 
     @property
+    def safety_history_path(self) -> Path:
+        """安全配置保存记录持久化文件路径。"""
+        return self.data_dir / "safety_history.json"
+
+    @property
+    def cycle_config_path(self) -> Path:
+        """自动控制工况（步骤序列、循环圈数）持久化文件路径。"""
+        return self.data_dir / "cycle_config.json"
+
+    @property
     def plc_config_path(self) -> Path:
         """PLC 连接参数（IP、机架、槽号、仿真）持久化文件路径。"""
         return self.data_dir / "plc_config.json"
@@ -50,7 +61,13 @@ class Settings:
 
     @property
     def log_dir(self) -> Path:
-        """运行日志与安全事件日志目录。"""
+        """运行日志、安全事件与 PLC 通信日志目录。
+
+        打包后的 EXE 写到 EXE 同级的 ``logs`` 子文件夹，方便现场把整个程序
+        文件夹拷走就带上全部日志；开发环境仍保持在用户数据目录下。
+        """
+        if getattr(sys, "frozen", False):
+            return Path(sys.executable).resolve().parent / "logs"
         return self.data_dir / "logs"
 
 

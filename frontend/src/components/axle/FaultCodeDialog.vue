@@ -182,17 +182,17 @@ const activeFaultItem = computed(() =>
         <Table>
           <TableHeader class="sticky top-0 bg-muted/80 backdrop-blur-xs z-10">
             <TableRow>
-              <!-- 列 E: 故障码 (DisplayCode) -->
+              <!-- 列 E: 故障码 -->
               <TableHead class="w-[140px] font-semibold text-foreground">
-                故障码 (DisplayCode)
+                故障码
               </TableHead>
-              <!-- 列 D: 含义 (DTC Meaning) -->
+              <!-- 列 D: 故障含义 -->
               <TableHead class="font-semibold text-foreground">
-                含义 (DTC Meaning)
+                故障含义
               </TableHead>
-              <!-- 列 F: 故障级别 (FaultLevel) -->
+              <!-- 列 F: 故障级别 -->
               <TableHead class="w-[150px] text-right font-semibold text-foreground">
-                故障级别 (FaultLevel)
+                故障级别
               </TableHead>
             </TableRow>
           </TableHeader>

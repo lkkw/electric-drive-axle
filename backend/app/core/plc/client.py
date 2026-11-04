@@ -36,6 +36,11 @@ from app.core.plc.points import (
 
 ByteTransform = Callable[[bytearray], bytes | bytearray]
 
+# 单次 S7 收发超时。update() 是“读 + 写”两次往返，2 × 0.8 s 仍短于
+# PlcPowerManager 的 2 s 调用超时，网络中断时调用能在超时前自行失败退出，
+# 不会在线程里继续卡着（snap7 默认收超时 3 s，比调用超时还长）。
+SNAP7_IO_TIMEOUT_SECONDS = 0.8
+
 
 class PlcClientError(Exception):
     """PLC 连接或读写失败。"""
@@ -46,9 +51,35 @@ class StationClient(Protocol):
 
     def disconnect(self) -> None: ...
 
+    def reconnect(self) -> None: ...
+
     def read_station(self) -> bytearray: ...
 
     def update(self, offset: int, size: int, transform: ByteTransform) -> None: ...
+
+
+def apply_io_timeout(client: object, seconds: float) -> None:
+    """设置已连接 snap7 客户端的收发超时。
+
+    基于 libsnap7 的版本通过 set_param 生效；纯 Python 实现（3.x）只把参数存起来，
+    实际超时取连接对象的 socket 超时，所以两处都设置。
+    """
+    from snap7.type import Parameter
+
+    millis = int(seconds * 1000)
+    for param in (Parameter.SendTimeout, Parameter.RecvTimeout):
+        try:
+            client.set_param(param, millis)  # type: ignore[attr-defined]
+        except Exception:
+            pass
+    connection = getattr(client, "connection", None)
+    if connection is None:
+        return
+    if hasattr(connection, "timeout"):
+        connection.timeout = seconds
+    sock = getattr(connection, "socket", None)
+    if sock is not None:
+        sock.settimeout(seconds)
 
 
 class SnapStationClient:
@@ -61,33 +92,46 @@ class SnapStationClient:
         self._lock = threading.Lock()
         self._client = None
 
-    def connect(self) -> None:
+    def _open(self):  # noqa: ANN202 - snap7 类型在延迟导入中
         import snap7  # 延迟导入：仿真与测试不依赖真实协议栈
 
+        client = snap7.client.Client()
+        try:
+            client.connect(self.ip, self.rack, self.slot)
+        except Exception as err:
+            try:
+                client.disconnect()
+            except Exception:
+                pass
+            raise PlcClientError(
+                f"连接 PLC {self.ip} (rack={self.rack}, slot={self.slot}) 失败: {err}"
+            ) from err
+        apply_io_timeout(client, SNAP7_IO_TIMEOUT_SECONDS)
+        return client
+
+    def connect(self) -> None:
         with self._lock:
             if self._client is not None:
                 return
-            client = snap7.client.Client()
-            try:
-                client.connect(self.ip, self.rack, self.slot)
-            except Exception as err:
-                try:
-                    client.disconnect()
-                except Exception:
-                    pass
-                raise PlcClientError(
-                    f"连接 PLC {self.ip} (rack={self.rack}, slot={self.slot}) 失败: {err}"
-                ) from err
-            self._client = client
+            self._client = self._open()
 
     def disconnect(self) -> None:
         with self._lock:
-            client, self._client = self._client, None
-            if client is not None:
-                try:
-                    client.disconnect()
-                except Exception:
-                    pass
+            self._close()
+
+    def _close(self) -> None:
+        client, self._client = self._client, None
+        if client is not None:
+            try:
+                client.disconnect()
+            except Exception:
+                pass
+
+    def reconnect(self) -> None:
+        """丢弃旧连接并新建。snap7 一次收发超时后连接即失效，只有重建才能恢复。"""
+        with self._lock:
+            self._close()
+            self._client = self._open()
 
     def _require_client(self):  # noqa: ANN202 - snap7 类型在延迟导入中
         if self._client is None:
@@ -146,6 +190,9 @@ class SimulatedStationClient:
 
     def disconnect(self) -> None:
         self._connected = False
+
+    def reconnect(self) -> None:
+        self._connected = True
 
     def _require_connected(self) -> None:
         if not self._connected:

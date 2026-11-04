@@ -46,6 +46,7 @@ def isolated_logging() -> object:
     """在隔离状态下测试日志配置，结束后恢复全局 logging 与异常钩子。"""
     root = logging.getLogger()
     events = logging.getLogger(logging_setup.EVENT_LOGGER_NAME)
+    plc_traffic = logging.getLogger(logging_setup.PLC_TRAFFIC_LOGGER_NAME)
     saved = (
         list(root.handlers),
         root.level,
@@ -53,10 +54,11 @@ def isolated_logging() -> object:
         getattr(root, logging_setup._CONFIGURED_ATTR, False),
         sys.excepthook,
         threading.excepthook,
+        list(plc_traffic.handlers),
     )
     setattr(root, logging_setup._CONFIGURED_ATTR, False)
     yield
-    for logger, handlers in ((root, saved[0]), (events, saved[2])):
+    for logger, handlers in ((root, saved[0]), (events, saved[2]), (plc_traffic, saved[6])):
         for handler in list(logger.handlers):
             if handler not in handlers:
                 handler.close()

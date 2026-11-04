@@ -9,16 +9,20 @@ import subprocess
 import sys
 from pathlib import Path
 
+from desktop import ensure_dotnet_config_file, unblock_bundled_files
+
 BACKEND_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = BACKEND_DIR.parent
 FRONTEND_DIR = PROJECT_DIR / "frontend"
 FRONTEND_DIST_DIR = FRONTEND_DIR / "dist"
 STATIC_DIR = BACKEND_DIR / "static"
-RELEASE_DIR = BACKEND_DIR / "release"
+# PyInstaller 默认的输出目录：打包结果为 dist/Electric-Drive-Axle/ 文件夹
+DIST_DIR = BACKEND_DIR / "dist"
 PYINSTALLER_WORK_DIR = BACKEND_DIR / "build" / "pyinstaller"
 PYINSTALLER_SPEC_DIR = BACKEND_DIR / "build" / "spec"
 DESKTOP_ENTRY = BACKEND_DIR / "desktop.py"
 DEFAULT_APP_NAME = "Electric-Drive-Axle"
+DEFAULT_ICON = BACKEND_DIR / "assets" / "icon.ico"
 
 
 def run_command(command: list[str], *, cwd: Path) -> None:
@@ -63,7 +67,9 @@ def package_desktop(args: argparse.Namespace) -> Path:
         "PyInstaller",
         "--noconfirm",
         "--clean",
-        f"--{args.mode}",
+        # 只打目录版：单文件版启动时要往 %TEMP% 解压，部分电脑上会报
+        # "Could not create temporary directory!" 而无法启动
+        "--onedir",
         "--console" if args.console else "--windowed",
         "--name",
         args.name,
@@ -73,12 +79,15 @@ def package_desktop(args: argparse.Namespace) -> Path:
         "uvicorn",
         "--collect-all",
         "webview",
+        # PLC 通讯库在连接真实 PLC 时才延迟导入，冒烟测试覆盖不到，显式收集全部子模块
+        "--collect-submodules",
+        "snap7",
         "--add-data",
         pyinstaller_data_option(STATIC_DIR, "static"),
         "--add-data",
         pyinstaller_data_option(BACKEND_DIR / "zlgcan_x64", "zlgcan_x64"),
         "--distpath",
-        str(RELEASE_DIR),
+        str(DIST_DIR),
         "--workpath",
         str(PYINSTALLER_WORK_DIR),
         "--specpath",
@@ -96,23 +105,22 @@ def package_desktop(args: argparse.Namespace) -> Path:
     run_command(command, cwd=BACKEND_DIR)
 
     executable_name = f"{args.name}.exe" if sys.platform == "win32" else args.name
-    if args.mode == "onefile":
-        return RELEASE_DIR / executable_name
-    return RELEASE_DIR / args.name / executable_name
+    executable_path = DIST_DIR / args.name / executable_name
+    config_path = ensure_dotnet_config_file(executable_path)
+    if config_path is not None:
+        print(f"Generated .NET runtime configuration: {config_path}")
+    unblock_bundled_files(executable_path.parent)
+    return executable_path
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Build Vue and package the FastAPI + PyWebView desktop application."
     )
-    parser.add_argument(
-        "--mode",
-        choices=("onedir", "onefile"),
-        default="onedir",
-        help="Use onedir while testing; switch to onefile for final delivery.",
-    )
     parser.add_argument("--name", default=DEFAULT_APP_NAME, help="Executable/application name.")
-    parser.add_argument("--icon", type=Path, help="Optional Windows .ico file.")
+    parser.add_argument(
+        "--icon", type=Path, default=DEFAULT_ICON, help="Windows .ico file for the executable."
+    )
     parser.add_argument(
         "--console",
         action="store_true",

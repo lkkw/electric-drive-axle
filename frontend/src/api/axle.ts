@@ -4,9 +4,11 @@ import type {
   AxleTelemetry,
   CanConnectRequest,
   CanSendRawFrameRequest,
+  CycleTestConfig,
   CycleTestStartRequest,
   CycleTestStatus,
   McuFaultCodeItem,
+  SafetyConfigRecord,
   VcuCommandState,
   VcuCommandUpdateRequest,
 } from '@/types/axle'
@@ -50,6 +52,14 @@ export const resumeCycleTest = () =>
 export const stopCycleTest = () =>
   alova.Post<CycleTestStatus>('/axle/cycle-test/stop', {})
 
+/** 获取已保存的自动控制工况；从未保存过时为 null */
+export const getCycleTestConfig = () =>
+  alova.Get<CycleTestConfig | null>('/axle/cycle-test/config', { cacheFor: 0 })
+
+/** 保存自动控制工况 */
+export const saveCycleTestConfig = (config: CycleTestConfig) =>
+  alova.Put<CycleTestConfig>('/axle/cycle-test/config', config)
+
 /** 紧急停机 */
 export const emergencyStop = () =>
   alova.Post<VcuCommandState>('/axle/emergency-stop', {})
@@ -69,6 +79,14 @@ export const getSafetyConfig = () =>
 /** 更新上位机自动紧急停机阈值 */
 export const updateSafetyConfig = (config: AxleSafetyConfig) =>
   alova.Put<AxleSafetyConfig>('/axle/safety/config', config)
+
+/** 获取安全配置保存记录，最新的在前 */
+export const getSafetyHistory = () =>
+  alova.Get<SafetyConfigRecord[]>('/axle/safety/history', { cacheFor: 0 })
+
+/** 清空安全配置保存记录 */
+export const clearSafetyHistory = () =>
+  alova.Delete<void>('/axle/safety/history')
 
 /** 获取电驱桥当前遥测快照 (禁用缓存) */
 export const getAxleStatus = () =>

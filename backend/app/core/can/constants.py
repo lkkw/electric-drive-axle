@@ -125,7 +125,7 @@ class McuFaultLevel(IntEnum):
 
 
 class McuTboxFaultLevel(IntEnum):
-    """MCU 温度故障等级 (MCU_TBOX_FltLevl)."""
+    """MCU 报警等级 (MCU_TBOX_FltLevl)：上报 T-Box 的整体报警等级，不是温度专用。"""
 
     NO_FAULT = 0  # 无故障
     LEVEL_1 = 1  # 一级故障（最轻微）
@@ -185,77 +185,77 @@ class McuFaultCodeItemDef:
 
     code: str  # DisplayCode 仪表显示码 (E列，例如 "MCU_64")
     meaning: str  # DTC 含义 (D列，例如 "VCE过流故障")
-    level: str  # 故障等级 (F列，例如 "三级 (Fault)")
+    level: str  # 故障等级 (F列，例如 "三级")
     raw_code: int  # 对应 CAN 信号 MCU_FltCode 报文传输数值
 
 
 MCU_FAULT_CODES: list[McuFaultCodeItemDef] = [
-    McuFaultCodeItemDef(code="MCU_64", meaning="VCE过流故障", level="三级 (Fault)", raw_code=64),
+    McuFaultCodeItemDef(code="MCU_64", meaning="VCE过流故障", level="三级", raw_code=64),
     McuFaultCodeItemDef(
-        code="MCU_79", meaning="相电流值零漂故障", level="三级 (Fault)", raw_code=79
+        code="MCU_79", meaning="相电流值零漂故障", level="三级", raw_code=79
     ),
     McuFaultCodeItemDef(
-        code="MCU_85", meaning="相电流值零漂故障", level="三级 (Fault)", raw_code=85
+        code="MCU_85", meaning="相电流值零漂故障", level="三级", raw_code=85
     ),
     McuFaultCodeItemDef(
-        code="MCU_170", meaning="HVDC软件过压故障", level="三级 (Fault)", raw_code=170
+        code="MCU_170", meaning="HVDC软件过压故障", level="三级", raw_code=170
     ),
-    McuFaultCodeItemDef(code="MCU_135", meaning="HVDC欠压故障", level="三级 (Fault)", raw_code=135),
+    McuFaultCodeItemDef(code="MCU_135", meaning="HVDC欠压故障", level="三级", raw_code=135),
     McuFaultCodeItemDef(
-        code="MCU_88", meaning="低压蓄电池过压故障", level="三级 (Fault)", raw_code=88
+        code="MCU_88", meaning="低压蓄电池过压故障", level="三级", raw_code=88
     ),
     McuFaultCodeItemDef(
-        code="MCU_89", meaning="低压蓄电池欠压故障", level="三级 (Fault)", raw_code=89
+        code="MCU_89", meaning="低压蓄电池欠压故障", level="三级", raw_code=89
     ),
     McuFaultCodeItemDef(
         code="MCU_73",
         meaning="IGBT模块温度检测电路输出电压高(断路)",
-        level="二级 (Limp)",
+        level="二级",
         raw_code=73,
     ),
     McuFaultCodeItemDef(
         code="MCU_74",
         meaning="IGBT模块温度检测电路输出电压低(短路)",
-        level="二级 (Limp)",
+        level="二级",
         raw_code=74,
     ),
     McuFaultCodeItemDef(
-        code="MCU_72", meaning="IGBT采样温度过温故障", level="二级 (Limp)", raw_code=72
+        code="MCU_72", meaning="IGBT采样温度过温故障", level="二级", raw_code=72
     ),
     McuFaultCodeItemDef(
-        code="MCU_11", meaning="IGBT采样温度降额", level="二级 (Derat)", raw_code=11
+        code="MCU_11", meaning="IGBT采样温度降额", level="二级", raw_code=11
     ),
     McuFaultCodeItemDef(
         code="MCU_106",
         meaning="电机定子温度传感器1电路输出电压低(短路)",
-        level="二级 (Limp)",
+        level="二级",
         raw_code=106,
     ),
     McuFaultCodeItemDef(
         code="MCU_105",
         meaning="电机定子温度传感器1电路输出电压高(断路)",
-        level="二级 (Limp)",
+        level="二级",
         raw_code=105,
     ),
     McuFaultCodeItemDef(
-        code="MCU_31", meaning="L2电机定子温度过温", level="三级 (Fault)", raw_code=31
+        code="MCU_31", meaning="L2电机定子温度过温", level="三级", raw_code=31
     ),
-    McuFaultCodeItemDef(code="MCU_7", meaning="电机定子温度降额", level="二级 (Derat)", raw_code=7),
+    McuFaultCodeItemDef(code="MCU_7", meaning="电机定子温度降额", level="二级", raw_code=7),
     McuFaultCodeItemDef(
-        code="MCU_46", meaning="VCU节点丢失故障", level="三级 (Fault)", raw_code=46
+        code="MCU_46", meaning="VCU节点丢失故障", level="三级", raw_code=46
     ),
-    McuFaultCodeItemDef(code="MCU_104", meaning="电机超速故障", level="三级 (Fault)", raw_code=104),
+    McuFaultCodeItemDef(code="MCU_104", meaning="电机超速故障", level="三级", raw_code=104),
     McuFaultCodeItemDef(
-        code="MCU_144", meaning="控制器堵转过载降额", level="二级 (Derat)", raw_code=144
+        code="MCU_144", meaning="控制器堵转过载降额", level="二级", raw_code=144
     ),
-    McuFaultCodeItemDef(code="MCU_103", meaning="输出缺相故障", level="三级 (Fault)", raw_code=103),
+    McuFaultCodeItemDef(code="MCU_103", meaning="输出缺相故障", level="三级", raw_code=103),
     McuFaultCodeItemDef(
-        code="MCU_139", meaning="HVDC过压降额故障", level="二级 (Derat)", raw_code=139
+        code="MCU_139", meaning="HVDC过压降额故障", level="二级", raw_code=139
     ),
     McuFaultCodeItemDef(
-        code="MCU_140", meaning="HVDC欠压降额故障", level="二级 (Derat)", raw_code=140
+        code="MCU_140", meaning="HVDC欠压降额故障", level="二级", raw_code=140
     ),
-    McuFaultCodeItemDef(code="MCU_142", meaning="超速降额故障", level="二级 (Derat)", raw_code=142),
+    McuFaultCodeItemDef(code="MCU_142", meaning="超速降额故障", level="二级", raw_code=142),
 ]
 
 # 按 CAN 原始故障码数值索引的映射表

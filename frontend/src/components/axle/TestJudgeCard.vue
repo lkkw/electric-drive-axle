@@ -57,7 +57,7 @@ const confirmOpen = computed({
 const judgeBlockedReason = computed(() => {
   const cycle = axleStore.telemetry.cycle_test
   if (cycle.status === 'running' || cycle.status === 'paused') {
-    return '循环测试执行中，结束后自动判定'
+    return '自动控制执行中，结束后自动判定'
   }
   if (cycle.auto_judge === 'pending') return '正在自动判定 / 下电，请稍候'
   return null
@@ -129,7 +129,7 @@ onUnmounted(() => {
         </Button>
       </div>
       <CardDescription>
-        循环测试跑完后自动判定并下电；手动测试时在此判定。判定结果写入 PLC 上传 MES 并保存试车记录，统计清零开始下一台。
+        自动控制跑完后自动判定并下电；手动测试时在此判定。判定结果写入 PLC 上传 MES 并保存试车记录，统计清零开始下一台。
       </CardDescription>
     </CardHeader>
 

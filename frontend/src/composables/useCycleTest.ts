@@ -1,8 +1,9 @@
-import { computed, ref } from 'vue'
+import { computed, onScopeDispose, ref, watch } from 'vue'
 import { toast } from 'vue-sonner'
 
+import { getCycleTestConfig, saveCycleTestConfig } from '@/api/axle'
 import { useAxleStore } from '@/stores/useAxleStore'
-import type { CycleGear, CycleTestStartRequest } from '@/types/axle'
+import type { CycleGear, CycleTestConfig, CycleTestStartRequest } from '@/types/axle'
 
 export interface CycleStep {
   id: string
@@ -12,19 +13,106 @@ export interface CycleStep {
   durationSeconds: number
 }
 
+/** 尚未加入序列的步骤，id 在插入时分配 */
+export type CycleStepDraft = Omit<CycleStep, 'id'>
+
+/**
+ * 默认工况：正转 1000 / 2000 / 3000 → N 缓冲 → 反转 1000 / 2000 / 3000 → N 缓冲。
+ * 反转由 R 挡决定方向，目标转速填正值（后端拒绝负转速）。
+ * 后端按 200 RPM/s 斜坡降速（减少回馈能量、防母线过压），3000 RPM 降到 0 约 15 s，
+ * 换向缓冲留 20 s 保证电机停稳后再反向；末尾的缓冲用于多圈时反转接回正转。
+ */
+const RUN_STEP_SECONDS = 60
+const NEUTRAL_BUFFER_SECONDS = 20
+
 export const DEFAULT_CYCLE_STEPS: readonly CycleStep[] = [
-  { id: 'step-1', name: '正转运行', gear: 1, targetSpeed: 1000, durationSeconds: 60 },
-  { id: 'step-2', name: '换向缓冲', gear: 3, targetSpeed: 0, durationSeconds: 5 },
-  { id: 'step-3', name: '反转运行', gear: 2, targetSpeed: 1000, durationSeconds: 60 },
-  { id: 'step-4', name: '换向缓冲', gear: 3, targetSpeed: 0, durationSeconds: 5 },
+  { id: 'step-1', name: '正转 1000', gear: 1, targetSpeed: 1000, durationSeconds: RUN_STEP_SECONDS },
+  { id: 'step-2', name: '正转 2000', gear: 1, targetSpeed: 2000, durationSeconds: RUN_STEP_SECONDS },
+  { id: 'step-3', name: '正转 3000', gear: 1, targetSpeed: 3000, durationSeconds: RUN_STEP_SECONDS },
+  { id: 'step-4', name: '换向缓冲', gear: 3, targetSpeed: 0, durationSeconds: NEUTRAL_BUFFER_SECONDS },
+  { id: 'step-5', name: '反转 1000', gear: 2, targetSpeed: 1000, durationSeconds: RUN_STEP_SECONDS },
+  { id: 'step-6', name: '反转 2000', gear: 2, targetSpeed: 2000, durationSeconds: RUN_STEP_SECONDS },
+  { id: 'step-7', name: '反转 3000', gear: 2, targetSpeed: 3000, durationSeconds: RUN_STEP_SECONDS },
+  { id: 'step-8', name: '换向缓冲', gear: 3, targetSpeed: 0, durationSeconds: NEUTRAL_BUFFER_SECONDS },
 ]
 
 let nextStepId = 100
+
+/** 连续输入时合并保存，避免每次按键都写盘 */
+const SAVE_DEBOUNCE_MS = 300
 
 export function useCycleTest() {
   const axleStore = useAxleStore()
   const totalLoops = ref(1)
   const steps = ref<CycleStep[]>(DEFAULT_CYCLE_STEPS.map((step) => ({ ...step })))
+
+  let saveTimer: ReturnType<typeof setTimeout> | undefined
+  let lastSavedConfig: string | undefined
+
+  function toConfig(): CycleTestConfig {
+    return {
+      total_loops: totalLoops.value,
+      steps: steps.value.map((step) => ({
+        name: step.name,
+        gear: step.gear,
+        target_speed: step.targetSpeed,
+        duration_seconds: step.durationSeconds,
+      })),
+    }
+  }
+
+  function persistConfig() {
+    clearTimeout(saveTimer)
+    saveTimer = undefined
+    const config = toConfig()
+    // 输入框清空等未输完的状态不保存，保留上一次完整配置
+    const isComplete = Number.isInteger(config.total_loops) && config.steps.every(
+      (step) => Number.isInteger(step.target_speed) && Number.isInteger(step.duration_seconds),
+    )
+    const serialized = JSON.stringify(config)
+    if (!isComplete || serialized === lastSavedConfig) return
+    lastSavedConfig = serialized
+    saveCycleTestConfig(config).send().catch((error: unknown) => {
+      lastSavedConfig = undefined
+      toast.warning('工况配置保存失败', {
+        description: error instanceof Error ? error.message : '请检查后端服务',
+      })
+    })
+  }
+
+  async function restoreConfig() {
+    try {
+      const saved = await getCycleTestConfig().send()
+      // 读取期间操作员已开始编辑时，以其编辑为准
+      if (!saved || saveTimer !== undefined) return
+      totalLoops.value = saved.total_loops
+      // 重新分配 id，避免与 insertStep 生成的 id 冲突（步骤列表以 id 作 key）
+      steps.value = saved.steps.map((step) => ({
+        id: `step-${nextStepId++}`,
+        name: step.name,
+        gear: step.gear,
+        targetSpeed: step.target_speed,
+        durationSeconds: step.duration_seconds,
+      }))
+      lastSavedConfig = JSON.stringify(toConfig())
+    } catch {
+      // 读取失败时沿用默认工况，不阻塞操作
+    }
+  }
+
+  watch(
+    [steps, totalLoops],
+    () => {
+      clearTimeout(saveTimer)
+      saveTimer = setTimeout(persistConfig, SAVE_DEBOUNCE_MS)
+    },
+    { deep: true },
+  )
+  // 离开页面时立即写入尚未落盘的修改
+  onScopeDispose(() => {
+    if (saveTimer !== undefined) persistConfig()
+  }, true)
+  void restoreConfig()
 
   const status = computed(() => axleStore.telemetry.cycle_test.status)
   const isRunning = computed(() => status.value === 'running')
@@ -77,20 +165,37 @@ export function useCycleTest() {
     return Math.min(100, Math.max(0, Math.round((totalElapsedSeconds.value / totalDuration) * 100)))
   })
 
-  function addStep() {
-    const lastStep = steps.value.at(-1)
-    const gear: CycleGear = lastStep?.gear === 1 ? 2 : 1
-    const newStep: CycleStep = {
-      id: `step-${nextStepId++}`,
-      name: gear === 1 ? '正转运行' : '反转运行',
-      gear,
-      targetSpeed: 1000,
-      durationSeconds: 60,
+  /** 校验失败返回提示文字；前缀用于指明是哪一步 */
+  function validateStep(step: CycleStepDraft, prefix: string): string | null {
+    if (!step.name.trim()) {
+      return `${prefix} 的名称不能为空`
     }
-    steps.value.push(newStep)
-    toast.success('已添加工况步骤', {
-      description: `步骤 ${steps.value.length}：${newStep.name} (${newStep.gear === 1 ? 'D挡正向' : 'R挡反向'} ${newStep.targetSpeed} RPM, ${newStep.durationSeconds}s)`,
-    })
+    if (!Number.isInteger(step.durationSeconds) || step.durationSeconds < 1 || step.durationSeconds > 3600) {
+      return `${prefix} 的时长必须是 1 至 3600 秒的整数`
+    }
+    if (!Number.isInteger(step.targetSpeed) || step.targetSpeed < 0 || step.targetSpeed > 12000) {
+      return `${prefix} 的目标转速必须是 0 至 12000 RPM 的正整数`
+    }
+    if ((step.gear === 1 || step.gear === 2) && step.targetSpeed <= 0) {
+      return `${prefix} 为 ${step.gear === 1 ? 'D 挡正转' : 'R 挡反转'}时目标转速必须大于 0 RPM`
+    }
+    if (step.gear === 3 && step.targetSpeed !== 0) {
+      return `${prefix} 为 N 挡时目标转速必须为 0`
+    }
+    return null
+  }
+
+  /** 把新步骤插到第 afterIndex 行下方；校验不通过时提示并返回 false */
+  function insertStep(afterIndex: number, draft: CycleStepDraft): boolean {
+    const position = afterIndex + 1
+    const error = validateStep(draft, `步骤 ${position + 1}`)
+    if (error) {
+      toast.warning(error)
+      return false
+    }
+    steps.value.splice(position, 0, { ...draft, name: draft.name.trim(), id: `step-${nextStepId++}` })
+    toast.success(`已添加为第 ${position + 1} 步`)
+    return true
   }
 
   function removeStep(index: number) {
@@ -120,25 +225,9 @@ export function useCycleTest() {
       return null
     }
     for (const [index, step] of steps.value.entries()) {
-      const prefix = `步骤 ${index + 1}`
-      if (!step.name.trim()) {
-        toast.warning(`${prefix} 的名称不能为空`)
-        return null
-      }
-      if (!Number.isInteger(step.durationSeconds) || step.durationSeconds < 1 || step.durationSeconds > 3600) {
-        toast.warning(`${prefix} 的时长必须是 1 至 3600 秒的整数`)
-        return null
-      }
-      if (!Number.isInteger(step.targetSpeed) || step.targetSpeed < 0 || step.targetSpeed > 12000) {
-        toast.warning(`${prefix} 的目标转速必须是 0 至 12000 RPM 的正整数`)
-        return null
-      }
-      if ((step.gear === 1 || step.gear === 2) && step.targetSpeed <= 0) {
-        toast.warning(`${prefix} 为 ${step.gear === 1 ? 'D 挡正转' : 'R 挡反转'}时目标转速必须大于 0 RPM`)
-        return null
-      }
-      if (step.gear === 3 && step.targetSpeed !== 0) {
-        toast.warning(`${prefix} 为 N 挡时目标转速必须为 0`)
+      const error = validateStep(step, `步骤 ${index + 1}`)
+      if (error) {
+        toast.warning(error)
         return null
       }
     }
@@ -166,7 +255,7 @@ export function useCycleTest() {
 
   async function startTest() {
     if (!axleStore.isConnected) {
-      toast.error('CAN 未连接，无法启动循环测试')
+      toast.error('CAN 未连接，无法启动自动控制')
       return
     }
     if (axleStore.isEmergencyLocked) {
@@ -174,18 +263,18 @@ export function useCycleTest() {
       return
     }
     if (isAutoJudging.value) {
-      toast.warning('上一轮循环测试正在自动判定 / 下电，请稍候')
+      toast.warning('上一轮自动控制正在自动判定 / 下电，请稍候')
       return
     }
     const request = buildRequest()
     if (!request) return
     try {
       await axleStore.runCycleTest(request)
-      toast.success('循环测试已由后端启动', {
+      toast.success('自动控制已由后端启动', {
         description: `共 ${request.steps.length} 个步骤，计划循环 ${request.total_loops} 圈`,
       })
     } catch (error) {
-      toast.error('循环测试启动失败', {
+      toast.error('自动控制启动失败', {
         description: error instanceof Error ? error.message : '请检查通信链路',
       })
     }
@@ -194,9 +283,9 @@ export function useCycleTest() {
   async function pauseTest() {
     try {
       await axleStore.pauseCycle()
-      toast.info('循环测试已暂停，安全命令已写入')
+      toast.info('自动控制已暂停，安全命令已写入')
     } catch (error) {
-      toast.error('暂停循环测试失败', {
+      toast.error('暂停自动控制失败', {
         description: error instanceof Error ? error.message : '请立即使用急停',
       })
     }
@@ -205,9 +294,9 @@ export function useCycleTest() {
   async function resumeTest() {
     try {
       await axleStore.resumeCycle()
-      toast.success('循环测试已继续')
+      toast.success('自动控制已继续')
     } catch (error) {
-      toast.error('继续循环测试失败', {
+      toast.error('继续自动控制失败', {
         description: error instanceof Error ? error.message : '请检查 CAN 和急停状态',
       })
     }
@@ -216,9 +305,9 @@ export function useCycleTest() {
   async function stopTest(reason?: string) {
     try {
       await axleStore.stopCycle()
-      toast.info(reason ?? '循环测试已终止，控制权已释放')
+      toast.info(reason ?? '自动控制已终止，控制权已释放')
     } catch (error) {
-      toast.error('终止循环测试失败', {
+      toast.error('终止自动控制失败', {
         description: error instanceof Error ? error.message : '请立即使用急停',
       })
     }
@@ -242,7 +331,7 @@ export function useCycleTest() {
     singleLoopTotalDuration,
     stepProgressPercent,
     overallProgressPercent,
-    addStep,
+    insertStep,
     removeStep,
     startTest,
     pauseTest,
