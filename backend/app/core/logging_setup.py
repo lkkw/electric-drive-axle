@@ -1,10 +1,13 @@
-"""运行日志与安全事件日志的落盘配置。
+"""运行日志、安全事件与 PLC 通信日志的落盘配置。
 
 打包后的窗口程序没有控制台，未配置处理器时所有告警都会丢失。这里统一配置：
 
 - ``app.log``：全部 INFO 及以上日志（含 uvicorn），按天轮转保留 30 天，用于排障；
 - ``events.log``：仅 ``app.events`` 记录的连接、急停、自动停机、链路故障、循环测试与
-  安全配置变更等关键事件，按天轮转保留 365 天，用于产线追溯。
+  安全配置变更等关键事件，按天轮转保留 365 天，用于产线追溯；
+- ``plc_traffic.log``：仅 ``app.plc_traffic`` 记录的上位机与 PLC 之间的读写往来
+  （上电请求、电压/产品设定、测试结果、Safe、接触器、测量值、序列号……），
+  按天轮转保留 365 天，用于事后查清是上位机还是 PLC 侧的责任。
 """
 
 import logging
@@ -15,8 +18,10 @@ from pathlib import Path
 from types import TracebackType
 
 EVENT_LOGGER_NAME = "app.events"
+PLC_TRAFFIC_LOGGER_NAME = "app.plc_traffic"
 APP_LOG_BACKUP_DAYS = 30
 EVENT_LOG_BACKUP_DAYS = 365
+PLC_TRAFFIC_LOG_BACKUP_DAYS = 365
 
 _CONFIGURED_ATTR = "_axle_logging_configured"
 _LOG_FORMAT = "%(asctime)s.%(msecs)03d %(levelname)-7s [%(name)s] %(message)s"
@@ -80,6 +85,12 @@ def configure_logging(log_dir: Path) -> None:
     events = logging.getLogger(EVENT_LOGGER_NAME)
     events.setLevel(logging.INFO)
     events.addHandler(_file_handler(log_dir / "events.log", EVENT_LOG_BACKUP_DAYS))
+
+    plc_traffic = logging.getLogger(PLC_TRAFFIC_LOGGER_NAME)
+    plc_traffic.setLevel(logging.INFO)
+    plc_traffic.addHandler(
+        _file_handler(log_dir / "plc_traffic.log", PLC_TRAFFIC_LOG_BACKUP_DAYS)
+    )
 
     _install_excepthooks()
     setattr(root, _CONFIGURED_ATTR, True)

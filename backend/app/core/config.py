@@ -1,5 +1,6 @@
 """Environment-backed application settings without an extra dependency."""
 
+import sys
 from dataclasses import dataclass
 from functools import lru_cache
 from os import getenv
@@ -60,7 +61,13 @@ class Settings:
 
     @property
     def log_dir(self) -> Path:
-        """运行日志与安全事件日志目录。"""
+        """运行日志、安全事件与 PLC 通信日志目录。
+
+        打包后的 EXE 写到 EXE 同级的 ``logs`` 子文件夹，方便现场把整个程序
+        文件夹拷走就带上全部日志；开发环境仍保持在用户数据目录下。
+        """
+        if getattr(sys, "frozen", False):
+            return Path(sys.executable).resolve().parent / "logs"
         return self.data_dir / "logs"
 
 
